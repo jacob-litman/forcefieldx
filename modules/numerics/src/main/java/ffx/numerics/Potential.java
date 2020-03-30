@@ -37,8 +37,12 @@
 //******************************************************************************
 package ffx.numerics;
 
+import ffx.utilities.MDListener;
+
 import java.util.Collections;
 import java.util.List;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 /**
  * The Potential interface defines methods required by an optimizer or molecular
@@ -306,14 +310,30 @@ public interface Potential {
     }
 
     /**
-     * Writes additional restart information, if any (e.g. OST histogram and lambda restart files).
-     * The recursive flag should generally only be true for the top-level Potential called.
+     * Gather listeners that this Potential and its underlying
      *
-     * @param recursive Whether to have all underlying Potentials write additional restart info.
+     * @param snapshot Frequency (in steps) that snapshots are printed.
+     * @param report   Frequency (in steps) that thermodynamics are reported.
+     * @param restart  Frequency (in steps) that restart files are written.
+     * @return Any Listeners associated with this potential and underlying potentials.
      */
-    default void writeAdditionalRestartInfo(boolean recursive) {
-        if (recursive) {
-            getUnderlyingPotentials().forEach((Potential p) -> p.writeAdditionalRestartInfo(false));
-        } // Else, no-op.
+    default List<MDListener> getAdditionalListeners(long snapshot, long restart, long report) {
+        Stream<MDListener> listeners = getUnderlyingPotentials().stream().
+                flatMap((Potential p) -> p.streamListeners(snapshot, restart, report));
+        listeners = Stream.concat(listeners, streamListeners(snapshot, restart, report));
+        return listeners.collect(Collectors.toList());
+    }
+
+    /**
+     * Stream the listeners that this Potential (excluding underlying potentials)
+     * would like to hook into algorithms above this level.
+     *
+     * @param snapshot Frequency (in steps) that snapshots are printed.
+     * @param report   Frequency (in steps) that restart files are written.
+     * @param restart  Frequency (in steps) that thermodynamics are reported.
+     * @return Stream of MDListeners associated with this Potential (non-recursive).
+     */
+    default Stream<MDListener> streamListeners(long snapshot, long restart, long report) {
+        return Stream.empty();
     }
 }

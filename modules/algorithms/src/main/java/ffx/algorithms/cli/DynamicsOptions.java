@@ -194,9 +194,6 @@ public class DynamicsOptions {
         } else {
             molDyn = MolecularDynamics.dynamicsFactory(activeAssembly, potential, activeAssembly.getProperties(), sh, thermostat, integrator, engine);
         }
-        molDyn.setFileType(writeout.getFileType());
-        molDyn.setRestartFrequency(checkpoint);
-        molDyn.setIntervalSteps(trajSteps);
 
         return molDyn;
     }
