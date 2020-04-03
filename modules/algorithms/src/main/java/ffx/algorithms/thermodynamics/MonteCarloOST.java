@@ -37,17 +37,20 @@
 //******************************************************************************
 package ffx.algorithms.thermodynamics;
 
-import java.util.EnumSet;
+import java.util.*;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import static java.lang.String.format;
-import static java.lang.System.arraycopy;
 import static java.lang.System.nanoTime;
 
+import ffx.algorithms.dynamics.DynamicAlgorithm;
+import ffx.crystal.Crystal;
+import ffx.crystal.CrystalPotential;
+import ffx.numerics.math.RunningStatistics;
+import ffx.utilities.MDListener;
 import org.apache.commons.configuration2.CompositeConfiguration;
-import static org.apache.commons.math3.util.FastMath.abs;
 
-import ffx.algorithms.AlgorithmListener;
 import ffx.algorithms.cli.DynamicsOptions;
 import ffx.algorithms.dynamics.MolecularDynamics;
 import ffx.algorithms.dynamics.integrators.IntegratorEnum;
@@ -57,8 +60,9 @@ import ffx.algorithms.mc.LambdaMove;
 import ffx.algorithms.mc.MDMove;
 import ffx.algorithms.thermodynamics.OrthogonalSpaceTempering.Histogram;
 import ffx.numerics.Potential;
-import ffx.potential.MolecularAssembly;
-import ffx.potential.utils.EnergyException;
+
+import javax.annotation.Nullable;
+
 import static ffx.utilities.Constants.NS2SEC;
 
 /**
@@ -88,7 +92,7 @@ import static ffx.utilities.Constants.NS2SEC;
  * @author Jacob Litman
  * @since 1.0
  */
-public class MonteCarloOST extends BoltzmannMC {
+public class MonteCarloOST extends BoltzmannMC implements DynamicAlgorithm {
 
     /**
      * Logger object to print out information for this class.
@@ -114,17 +118,17 @@ public class MonteCarloOST extends BoltzmannMC {
      */
     private final MDMove mdMove;
     /**
-     * Total number of steps to take for MC-OST sampling.
+     * Molecular Dynamics object encapsulated in the MDMove.
      */
-    private long totalSteps;
+    private final MolecularDynamics molDyn;
     /**
      * Number of steps to take per MC-OST round.
      */
-    private long stepsPerMove;
+    private final long stepsPerMove;
     /**
      * Lambda move object for completing MC-OST lambda moves.
      */
-    private LambdaMove lambdaMove;
+    private final LambdaMove lambdaMove;
     /**
      * Double that keeps track of our lambda value.
      */
@@ -139,121 +143,142 @@ public class MonteCarloOST extends BoltzmannMC {
      */
     private final Level verboseLoggingLevel;
     /**
-     * How verbose MD should be.
-     */
-    private final MolecularDynamics.VerbosityLevel mdVerbosityLevel;
-    /**
      * Deposit a bias once every N MC cycles. Defaults to 1.
      */
     private final int biasDepositionFrequency;
     /**
-     * True if MC-OST should handle writing out files.
+     * True if MC-OST is the top-level algorithm
      */
-    private boolean automaticWriteouts = true;
+    private final boolean topLevelAlgorithm;
+
+    /**
+     * Current logging level to use.
+     */
+    private Level currentLevel = Level.INFO;
+    private final Level regularLevel;
+    private final Level verboseLevel;
+    
+    private final double[] proposedCoordinates;
+
+    private final List<MCActions> sinceLastMetropolis = new ArrayList<>(3);
+    private final Deque<Runnable> reverts = new ArrayDeque<>(2);
+
+    private double initFFE;
+    private double initKE;
+    private double initBias;
+    // Initial total PE is initFFE + initBias.
+    private double currentFFE;
+    private double currentKE;
+    private double currentBias;
+    
+    private RunningStatistics acceptXYZ;
+    private RunningStatistics acceptLambda;
+    private RunningStatistics acceptCombined;
+
+    private static final String equilString = "Equilibration";
+    private static final String prodString = "Production";
+    private static final String equilAlgoString = "";
+    private static final String algoFormatString = " %s %s MOST sampling with lambda and HMC moves";
 
     /**
      * <p>
      * Constructor for MonteCarloOST.</p>
      *
-     * @param potentialEnergy          a {@link ffx.numerics.Potential} object.
-     * @param orthogonalSpaceTempering a {@link OrthogonalSpaceTempering} object.
-     * @param molecularAssembly        a {@link ffx.potential.MolecularAssembly} object.
-     * @param properties               a {@link org.apache.commons.configuration2.CompositeConfiguration} object.
-     * @param listener                 a {@link ffx.algorithms.AlgorithmListener} object.
-     * @param dynamics                 CLI object containing key information.
-     * @param verbose                  Whether to be verbose.
-     * @param cycleLength              Length of an MC cycle in MD steps.
+     * @param opts Options to apply to this MC-OST.
      */
-    public MonteCarloOST(Potential potentialEnergy, OrthogonalSpaceTempering orthogonalSpaceTempering,
-                         MolecularAssembly molecularAssembly, CompositeConfiguration properties,
-                         AlgorithmListener listener, DynamicsOptions dynamics, boolean verbose,
-                         int cycleLength) {
-        this.potential = potentialEnergy;
-        this.orthogonalSpaceTempering = orthogonalSpaceTempering;
-        verboseLoggingLevel = verbose ? Level.INFO : Level.FINE;
-        mdVerbosityLevel = verbose ? MolecularDynamics.VerbosityLevel.QUIET : MolecularDynamics.VerbosityLevel.SILENT;
-        stepsPerMove = cycleLength;
-        totalSteps = dynamics.getNumSteps();
-
-        ThermostatEnum tstat = dynamics.thermostat;
-        if (!tstat.equals(ThermostatEnum.ADIABATIC)) {
-            logger.warning(format("MC-OST requires the ADIABATIC thermostat, found %s.", tstat));
-            dynamics.setThermostat(ThermostatEnum.ADIABATIC);
-        }
-
-        IntegratorEnum integ = dynamics.integrator;
-        if (!integ.knownReversible || !integ.knownDeterministic) {
-            throw new IllegalArgumentException(format("MC-OST requires " +
-                    "a reversible deterministic integrator (e.g. VERLET, RESPA), found %s!", integ));
-        }
+    public MonteCarloOST(MonteCarloOstOptions opts, boolean topLevel) {
+        this.potential = opts.potentialEnergy;
+        this.orthogonalSpaceTempering = opts.orthogonalSpaceTempering;
+        this.verboseLoggingLevel = opts.verbose ? Level.INFO : Level.FINE;
+        this.molDyn = opts.moldyn;
+        this.stepsPerMove = opts.cycleLength;
+        this.topLevelAlgorithm = topLevel;
+        this.regularLevel = opts.regularLevel;
+        this.verboseLevel = opts.verboseLevel;
 
         // Create the MC MD and Lambda moves.
-        mdMove = new MDMove(molecularAssembly, potential, properties, listener, dynamics, stepsPerMove);
-        if (properties.containsKey("randomseed")) {
-            int randomSeed = properties.getInt("randomseed", 0);
-            logger.info(format(" Setting random seed for lambdaMove to %d ", randomSeed));
-            lambdaMove = new LambdaMove(randomSeed, orthogonalSpaceTempering);
-            setRandomSeed(randomSeed);
-        } else {
-            lambdaMove = new LambdaMove(orthogonalSpaceTempering);
+        mdMove = new MDMove(potential, opts.moldyn, stepsPerMove, opts.temperature);
+        boolean discreteLambda = opts.properties.getBoolean("discrete-lambda", false);
+
+        if (discreteLambda) {
+            double expected = orthogonalSpaceTempering.getHistogram().dL;
+            if (opts.moveSize != expected) {
+                logger.warning(String.format(" Passed in discrete move size %.5f, " +
+                        "but expected %.5f by inspecting histogram!", opts.moveSize, expected));
+                opts.moveSize = expected;
+            }
         }
 
-        boolean discreteLambda = properties.getBoolean("discrete-lambda", false);
-        if (discreteLambda) {
-            lambdaMove.setContinuous(false);
-            // Set the move size to the Lambda bin width.
-            lambdaMove.setMoveSize(orthogonalSpaceTempering.getHistogram().dL);
+        if (opts.properties.containsKey("randomseed")) {
+            int randomSeed = opts.properties.getInt("randomseed", 0);
+            logger.info(format(" Setting random seed for lambdaMove to %d ", randomSeed));
+            lambdaMove = new LambdaMove(orthogonalSpaceTempering, discreteLambda, opts.moveSize, randomSeed);
+            setRandomSeed(randomSeed);
+        } else {
+            lambdaMove = new LambdaMove(orthogonalSpaceTempering, discreteLambda, opts.moveSize, ThreadLocalRandom.current().nextLong());
         }
 
         // Changing the value of lambda will be handled by this class, as well as adding the time dependent bias.
         orthogonalSpaceTempering.setPropagateLambda(false);
-        biasDepositionFrequency = properties.getInt("mc-ost-biasf", 1);
+        biasDepositionFrequency = opts.biasDepositionFrequency;
         if (biasDepositionFrequency < 1) {
             throw new IllegalArgumentException("The property mc-ost-biasf must be a positive integer, found " + biasDepositionFrequency + " !");
         } else if (biasDepositionFrequency > 1) {
             logger.info(format(" MC-OST will deposit a bias only once per %d MC cycles (mc-ost-biasf).", biasDepositionFrequency));
         }
+        
+        proposedCoordinates = new double[potential.getNumberOfVariables()];
     }
 
-    /**
-     * Takes in parameters and calls the MDMove method setMDParameters to update
-     * the stepsPerMove and timeStep parameters to the current value in this
-     * class
-     *
-     * @param totalSteps a int.
-     */
-    public void setMDMoveParameters(long totalSteps) {
-        setRunLength(totalSteps);
-    }
+    public static class MonteCarloOstOptions {
+        // Constructor variables.
+        final Potential potentialEnergy;
+        final OrthogonalSpaceTempering orthogonalSpaceTempering;
+        final DynamicsOptions dynamics;
+        final CompositeConfiguration properties;
+        final MolecularDynamics moldyn;
+        final double temperature;
+        final long cycleLength;
 
-    /**
-     * Sets the next number of steps MC-OST should run.
-     *
-     * @param totalSteps The length of the next MC-OST run.
-     */
-    public void setRunLength(long totalSteps) {
-        this.totalSteps = totalSteps;
+        // Property variables.
+        final int biasDepositionFrequency;
+
+        // Settable by exterior methods.
+        public boolean verbose = false;
+        public double moveSize;
+        Level regularLevel = Level.INFO;
+        Level verboseLevel = Level.INFO;
+
+        public MonteCarloOstOptions(Potential p, OrthogonalSpaceTempering ost,
+                                    DynamicsOptions dyn, CompositeConfiguration properties,
+                                    MolecularDynamics md, long cycleLength) {
+            this.potentialEnergy = p;
+            this.orthogonalSpaceTempering = ost;
+            this.dynamics = dyn;
+            this.properties = properties;
+            this.moldyn = md;
+            this.cycleLength = cycleLength;
+
+            this.temperature = dynamics.getTemp();
+
+            biasDepositionFrequency = properties.getInt("mc-ost-biasf", 1);
+
+            // TODO: Set thermostat to ADIABATIC upstream of here, before the MD is created.
+            ThermostatEnum tstat = dynamics.thermostat;
+            if (!tstat.equals(ThermostatEnum.ADIABATIC)) {
+                throw new IllegalArgumentException(format("MC-OST requires the ADIABATIC thermostat, found %s.", tstat));
+            }
+
+            IntegratorEnum integ = dynamics.integrator;
+            if (!integ.knownReversible || !integ.knownDeterministic) {
+                throw new IllegalArgumentException(format("MC-OST requires " +
+                        "a reversible deterministic integrator (e.g. VERLET, RESPA), found %s!", integ));
+            }
+        }
     }
 
     public MolecularDynamics getMD() {
         return mdMove.getMD();
-    }
-
-    /**
-     * Calls on LambdaMove class method setLambdaStdDev to update the lambda
-     * standard deviation to the current value in this class
-     *
-     * @param stdDev a double.
-     */
-    public void setLambdaStdDev(double stdDev) {
-        if (!lambdaMove.isContinuous()) {
-            if (stdDev != orthogonalSpaceTempering.getHistogram().dL) {
-                logger.info(format(" Requested Lambda step size change %6.4f is not equal to OST bin width %6.4f.",
-                        stdDev, orthogonalSpaceTempering.getHistogram().dL));
-                return;
-            }
-        }
-        lambdaMove.setMoveSize(stdDev);
     }
 
     /**
@@ -286,6 +311,25 @@ public class MonteCarloOST extends BoltzmannMC {
         return lambda;
     }
 
+    private void resetLevel() {
+        this.currentLevel = regularLevel;
+    }
+
+    private void singleAction(MCActions act) {
+        assert act != MCActions.COINFLIP;
+        switch (act) {
+            case LAMBDA: {
+                singleStepLambda();
+            }
+            case HMC: {
+                singleStepMD();
+            }
+            case METROPOLIZE: {
+                metropolize();
+            }
+        }
+    }
+
     /**
      * The goal is to sample lambda and coordinates (X) separately to converge
      * the ensemble average dU/dL for every state (lambda) along the
@@ -303,7 +347,7 @@ public class MonteCarloOST extends BoltzmannMC {
      * <p>
      * 5.) Add to the bias.
      */
-    public void sampleTwoStep() {
+    public void sample(long steps, MCAlgorithm algorithm) {
         // Validate the starting value of lambda.
         lambda = orthogonalSpaceTempering.getLambda();
         lambda = lambdaMove.validateLambda(lambda);
@@ -312,10 +356,11 @@ public class MonteCarloOST extends BoltzmannMC {
         int n = potential.getNumberOfVariables();
         double[] gradient = new double[n];
         double[] currentCoordinates = new double[n];
-        double[] proposedCoordinates = new double[n];
-        long numMoves = totalSteps / stepsPerMove;
-        int acceptLambda = 0;
-        int acceptMD = 0;
+        long numMoves = steps / stepsPerMove;
+
+        acceptXYZ = new RunningStatistics();
+        acceptLambda = new RunningStatistics();
+        acceptCombined = new RunningStatistics();
 
         // Initialize the current coordinates.
         potential.getCoordinates(currentCoordinates);
@@ -328,23 +373,53 @@ public class MonteCarloOST extends BoltzmannMC {
 
         // Collect the current dU/dL, Force Field Energy and Bias Energy.
         double currentdUdL = orthogonalSpaceTempering.getForceFielddEdL();
-        double currentForceFieldEnergy = orthogonalSpaceTempering.getForceFieldEnergy();
-        double currentBiasEnergy = orthogonalSpaceTempering.getBiasEnergy();
+        initFFE = orthogonalSpaceTempering.getForceFieldEnergy();
+        initBias = orthogonalSpaceTempering.getBiasEnergy();
+        initKE = molDyn.getKineticEnergy();
+        currentFFE = initFFE;
+        currentBias = initBias;
+        currentKE = initBias;
+
+        MCActions[] acts = algorithm.actions;
+        int nActs = acts.length;
 
         // Initialize MC move instances.
         for (int imove = 0; imove < numMoves; imove++) {
             long totalMoveTime = -nanoTime();
-            long mdMoveAndEvalTime = -nanoTime();
 
-            if (equilibration) {
-                logger.info(format("\n MD Equilibration Round %d", imove + 1));
-            } else {
-                logger.info(format("\n MC Orthogonal Space Sampling Round %d: Independent Steps", imove + 1));
+            String epS = equilibration ? equilString : prodString;
+            String algS = equilibration ? equilAlgoString : algorithm.algoString;
+            logger.info(String.format(algoFormatString, epS, algS));
+
+            for (int i = 0; i < nActs; i++) {
+                if (acts[i] == MCActions.COINFLIP) {
+                    sinceLastMetropolis.add(MCActions.COINFLIP);
+                    assert i < (nActs - 2);
+                    boolean coinflip = random.nextBoolean();
+                    int first;
+                    int second;
+                    if (coinflip) {
+                        first = i + 1;
+                        second = i + 2;
+                    } else {
+                        first = i + 2;
+                        second = i + 1;
+                    }
+                    singleAction(acts[first]);
+                    singleAction(acts[second]);
+
+                    // Manually increment i.
+                    i += 2;
+                } else {
+                    singleAction(acts[i]);
+                }
             }
 
+            resetLevel();
+
             // Run MD in an approximate potential U* (U star) that does not include the OST bias.
-            long mdMoveTime = -nanoTime();
-            mdMove.move(mdVerbosityLevel);
+            /*long mdMoveTime = -nanoTime();
+            mdMove.move();
             mdMoveTime += nanoTime();
             logger.log(verboseLoggingLevel, format("  Total time for MD move: %6.3f", mdMoveTime * NS2SEC));
 
@@ -479,23 +554,20 @@ public class MonteCarloOST extends BoltzmannMC {
                 // Update the current OST Energy to be the sum of the current Force Field Energy and updated OST Bias.
                 currentOSTEnergy = currentForceFieldEnergy + currentBiasEnergy;
 
-                if (automaticWriteouts) {
+                // TODO: Call listeners.
+                /*if (automaticWriteouts) {
                     long mdMoveNum = imove * stepsPerMove;
                     boolean trySnapshot = lambda >= orthogonalSpaceTempering.getLambdaWriteOut();
                     EnumSet<MolecularDynamics.WriteActions> written = mdMove.writeFilesForStep(mdMoveNum, trySnapshot, true);
                     if (written.contains(MolecularDynamics.WriteActions.RESTART)) {
                         orthogonalSpaceTempering.writeAdditionalRestartInfo(false);
                     }
-                }
-            }
+                }*/
+            /*}
 
             totalMoveTime += nanoTime();
-            logger.info(format(" Round complete in %6.3f sec.", totalMoveTime * NS2SEC));
+            logger.info(format(" Round complete in %6.3f sec.", totalMoveTime * NS2SEC));*/
         }
-    }
-
-    public void setAutomaticWriteouts(boolean autoWrite) {
-        automaticWriteouts = autoWrite;
     }
 
     /**
@@ -507,6 +579,8 @@ public class MonteCarloOST extends BoltzmannMC {
         lambdaMove.move();
         double proposedLambda = orthogonalSpaceTempering.getLambda();
         logger.log(verboseLoggingLevel, format(" Proposed lambda: %5.3f.", proposedLambda));
+        sinceLastMetropolis.add(MCActions.LAMBDA);
+        reverts.push(mdMove::revertMove);
         return proposedLambda;
     }
 
@@ -515,119 +589,85 @@ public class MonteCarloOST extends BoltzmannMC {
      */
     private void singleStepMD() {
         long mdMoveTime = -nanoTime();
-        mdMove.move(mdVerbosityLevel);
+        mdMove.move();
         mdMoveTime += nanoTime();
+        sinceLastMetropolis.add(MCActions.HMC);
+        reverts.push(mdMove::revertMove);
         logger.log(verboseLoggingLevel, format(" Total time for MD move: %6.3f", mdMoveTime * NS2SEC));
     }
 
-    /**
-     * The goal is to sample lambda and coordinates (X) simultaneously to
-     * converge the ensemble average dU/dL for every state (lambda) along the
-     * thermodynamic path.
-     * <p>
-     * 1.) Randomly change the value of Lambda.
-     * <p>
-     * 2.) At the proposed lambda, run a defined length MD trajectory to "move"
-     * coordinates and dU/dL.
-     * <p>
-     * 3.) Accept / Reject the Lambda + MD move using the total Hamiltonian
-     * (Kinetic energy + OST energy).
-     * <p>
-     * 4.) Add to the bias.
-     */
-    public void sampleOneStep() {
-        // Validate the starting value of lambda.
-        lambda = orthogonalSpaceTempering.getLambda();
-        lambda = lambdaMove.validateLambda(lambda);
-        orthogonalSpaceTempering.setLambda(lambda);
-
-        int n = potential.getNumberOfVariables();
-        double[] gradient = new double[n];
-        double[] currentCoordinates = new double[n];
-        double[] proposedCoordinates = new double[n];
-        long numMoves = totalSteps / stepsPerMove;
-        int acceptMD = 0;
-        int acceptMCOST = 0;
-
-        // Initialize the current coordinates.
-        potential.getCoordinates(currentCoordinates);
-
-        // Update time-dependent bias.
-        Histogram histogram = orthogonalSpaceTempering.getHistogram();
-
-        // Compute the Total OST Energy as the sum of the Force Field Energy and Bias Energy.
-        double currentOSTEnergy = orthogonalSpaceTempering.energyAndGradient(currentCoordinates, gradient);
-
-        // Retrieve the computed dU/dL, Force Field Energy and Bias Energy.
-        double currentdUdL = orthogonalSpaceTempering.getForceFielddEdL();
-        double currentForceFieldEnergy = orthogonalSpaceTempering.getForceFieldEnergy();
-        double currentBiasEnergy = orthogonalSpaceTempering.getBiasEnergy();
-
-        // Initialize MC move instances.
-        for (int imove = 0; imove < numMoves; imove++) {
-            long totalMoveTime = -nanoTime();
-
-            double currentLambda = orthogonalSpaceTempering.getLambda();
-            double proposedLambda = currentLambda;
-
-            boolean lambdaFirst = random.nextBoolean();
-
-            if (equilibration) {
-                logger.info(format("\n Equilibration Round %d", imove + 1));
-            } else {
-                String moveType = lambdaFirst ? "Single-step lambda plus MD move." : " Single-step MD plus lambda move.";
-                logger.info(format("\n MC-OST Round %d: %s", imove + 1, moveType));
+    private void resetRevertStack(boolean accepted) {
+        if (accepted) {
+            while (reverts.size() > 0) {
+                reverts.pop().run();
             }
-
-            logger.fine(format(" Starting force field energy for move %16.8f", currentForceFieldEnergy));
-
-            if (equilibration) {
-                singleStepMD();
-            } else {
-                if (lambdaFirst) {
-                    proposedLambda = singleStepLambda();
-                    singleStepMD();
-                } else {
-                    singleStepMD();
-                    proposedLambda = singleStepLambda();
-                }
+        } else {
+            while (reverts.size() > 0) {
+                reverts.pop();
             }
+        }
+    }
 
-            // Get the starting and final kinetic energy for the MD move.
-            double currentKineticEnergy = mdMove.getInitialKinetic();
-            double proposedKineticEnergy = mdMove.getKineticEnergy();
+    private boolean metropolize() {
+        potential.getCoordinates(proposedCoordinates);
+        double proposedPE = potential.energy(proposedCoordinates, false);
+        double proposedKE = mdMove.getKineticEnergy();
+        double proposedH = proposedPE + proposedKE;
+        double currentH = currentFFE + currentKE + currentBias;
 
-            // Get the new coordinates.
-            potential.getCoordinates(proposedCoordinates);
+        // Retrieve the proposed dU/dL, Force Field Energy and Bias Energy.
+        double proposeddUdL = orthogonalSpaceTempering.getForceFielddEdL();
+        double proposedLambda = orthogonalSpaceTempering.getLambda();
+        double proposedFFE = orthogonalSpaceTempering.getForceFieldEnergy();
+        double proposedBias = orthogonalSpaceTempering.getBiasEnergy();
 
-            long proposedOSTEnergyTime = -nanoTime();
+        double deltaKE = proposedKE - currentKE;
+        double deltaFFE = proposedFFE - currentFFE;
+        double deltaBias = proposedBias - currentBias;
+        double deltaH = proposedH - currentH;
 
-            // Compute the Total OST Energy as the sum of the Force Field Energy and Bias Energy.
-            double proposedOSTEnergy;
-            try {
-                proposedOSTEnergy = orthogonalSpaceTempering.energyAndGradient(proposedCoordinates, gradient);
-            } catch (EnergyException e) {
-                mdMove.revertMove();
-                mdMove.writeErrorFiles();
-                if (!equilibration) {
-                    lambdaMove.revertMove();
-                    lambda = currentLambda;
-                }
-                logger.log(Level.INFO, " Unstable MD Move skipped.");
-                continue;
+        double deltaHStar = deltaKE + deltaFFE;
+        
+        boolean accepted;
+        boolean hardWallReject = false;
+        if (!orthogonalSpaceTempering.insideHardWallConstraint(proposedLambda, proposeddUdL)) {
+            accepted = false;
+            hardWallReject = true;
+        } else if (Math.abs(deltaHStar) > ENERGY_CONSERVATION_TOLERANCE) {
+            accepted = false;
+        } else if (!evaluateMove(currentH, proposedH)) {
+            accepted = false;
+        } else {
+            accepted = true;
+        }
+
+        double acceptVal = accepted ? 1.0 : 0.0;
+
+        if (sinceLastMetropolis.contains(MCActions.COINFLIP)) {
+            acceptCombined.addValue(acceptVal);
+        } else if (sinceLastMetropolis.size() == 1) {
+            if (sinceLastMetropolis.get(0) == MCActions.HMC) {
+                acceptXYZ.addValue(acceptVal);
+            } else if (sinceLastMetropolis.get(0) == MCActions.LAMBDA) {
+                acceptLambda.addValue(acceptVal);
             }
+        }
 
-            proposedOSTEnergyTime += nanoTime();
-            logger.fine(format(" Time to complete MD OST energy method call %6.3f", proposedOSTEnergyTime * NS2SEC));
+        boolean doLog = logger.isLoggable(currentLevel);
 
-            // Retrieve the proposed dU/dL, Force Field Energy and Bias Energy.
-            double proposeddUdL = orthogonalSpaceTempering.getForceFielddEdL();
-            double proposedForceFieldEnergy = orthogonalSpaceTempering.getForceFieldEnergy();
-            double proposedBiasEnergy = orthogonalSpaceTempering.getBiasEnergy();
+        if (doLog) {
+            StringBuilder sb = new StringBuilder("\n   Kinetic    Potential         Bias        Total\n");
+            sb.append(String.format("  Current  %12.4f %12.4f %12.4f %12.4f\n", currentKE, currentFFE, currentBias, currentH));
+            sb.append(String.format("  Proposed %12.4f %12.4f %12.4f %12.4f\n", proposedKE, proposedFFE, proposedBias, proposedH));
+            sb.append(String.format("  Delta    %12.4f %12.4f %12.4f %12.4f", deltaKE, deltaFFE, deltaBias, deltaH));
 
-            // The Metropolis criteria is based on the sum of the OST Energy and Kinetic Energy.
-            double currentTotalEnergy = currentOSTEnergy + currentKineticEnergy;
-            double proposedTotalEnergy = proposedOSTEnergy + proposedKineticEnergy;
+            logger.log(currentLevel, sb.toString());
+            //resetLevel();
+        }
+
+        resetRevertStack(accepted);
+        
+        /*
 
             logger.log(verboseLoggingLevel, format("\n  %8s %12s %12s %12s %12s", "", "Kinetic", "Potential", "Bias", "Total"));
             logger.log(verboseLoggingLevel, format("  Current  %12.4f %12.4f %12.4f %12.4f",
@@ -643,79 +683,32 @@ public class MonteCarloOST extends BoltzmannMC {
             double energyChange = mdMove.getEnergyChange();
             if (abs(energyChange) > ENERGY_CONSERVATION_TOLERANCE) {
                 mdMove.revertMove();
-                if (!equilibration) {
-                    lambdaMove.revertMove();
-                    lambda = currentLambda;
-                }
-                logger.warning(" MC Move skipped due to lack of MD energy conservation.");
+                logger.warning(" MC Move skipped due to lack of MD energy conservation");
                 continue;
             }
 
-            if (equilibration) {
-                if (orthogonalSpaceTempering.insideHardWallConstraint(orthogonalSpaceTempering.getLambda(), proposeddUdL) &&
-                        evaluateMove(currentTotalEnergy, proposedTotalEnergy)) {
-                    // Accept MD.
-                    acceptMD++;
-                    double percent = (acceptMD * 100.0) / (imove + 1);
-                    logger.info(format(" Accept [ FL=%8.3f, E=%12.4f]  -> [ FL=%8.3f, E=%12.4f] (%5.1f%%)",
-                            currentdUdL, currentOSTEnergy, proposeddUdL, proposedOSTEnergy, percent));
-                    currentOSTEnergy = proposedOSTEnergy;
-                    currentdUdL = proposeddUdL;
-                    currentForceFieldEnergy = proposedForceFieldEnergy;
-                    currentBiasEnergy = proposedBiasEnergy;
-                    arraycopy(proposedCoordinates, 0, currentCoordinates, 0, n);
-                } else {
-                    double percent = (acceptMD * 100.0) / (imove + 1);
-                    logger.info(format(" Reject [ FL=%8.3f, E=%12.4f]  -> [ FL=%8.3f, E=%12.4f] (%5.1f%%)",
-                            currentdUdL, currentOSTEnergy, proposeddUdL, proposedOSTEnergy, percent));
-                    mdMove.revertMove();
-                }
+            if (orthogonalSpaceTempering.insideHardWallConstraint(orthogonalSpaceTempering.getLambda(), proposeddUdL) &&
+                    evaluateMove(currentTotalEnergy, proposedTotalEnergy)) {
+                // Accept MD move.
+                acceptMD++;
+                double percent = (acceptMD * 100.0) / (imove + 1);
+                logger.info(format(" Accept [FL=%8.3f, E=%12.4f]  -> [FL=%8.3f,E=%12.4f] (%5.1f%%)",
+                        currentdUdL, currentOSTEnergy, proposeddUdL, proposedOSTEnergy, percent));
+                currentOSTEnergy = proposedOSTEnergy;
+                currentdUdL = proposeddUdL;
+                currentForceFieldEnergy = proposedForceFieldEnergy;
+                currentBiasEnergy = proposedBiasEnergy;
+                arraycopy(proposedCoordinates, 0, currentCoordinates, 0, n);
             } else {
-                if (orthogonalSpaceTempering.insideHardWallConstraint(orthogonalSpaceTempering.getLambda(), proposeddUdL) &&
-                        evaluateMove(currentTotalEnergy, proposedTotalEnergy)) {
-                    acceptMCOST++;
-                    double percent = (acceptMCOST * 100.0) / (imove + 1);
-                    logger.info(format(" Accept [ L=%5.3f, FL=%8.3f, E=%12.4f]  -> [ L=%5.3f, FL=%8.3f, E=%12.4f] (%5.1f%%)",
-                            currentLambda, currentdUdL, currentOSTEnergy, proposedLambda, proposeddUdL, proposedOSTEnergy, percent));
-                    lambda = proposedLambda;
-                    currentdUdL = proposeddUdL;
-                    currentForceFieldEnergy = proposedForceFieldEnergy;
-                    arraycopy(proposedCoordinates, 0, currentCoordinates, 0, n);
-                } else {
-                    double percent = (acceptMCOST * 100.0) / (imove + 1);
-                    logger.info(format(" Reject [ L=%5.3f, FL=%8.3f, E=%12.4f]  -> [ L=%5.3f, FL=%8.3f, E=%12.4f] (%5.1f%%)",
-                            currentLambda, currentdUdL, currentOSTEnergy, proposedLambda, proposeddUdL, proposedOSTEnergy, percent));
-                    lambdaMove.revertMove();
-                    lambda = currentLambda;
-                    mdMove.revertMove();
-                }
-
-                if (imove % biasDepositionFrequency == 0) {
-                    histogram.addBias(currentdUdL, currentCoordinates, null);
-                } else {
-                    logger.log(Level.FINE, format(" Cycle %d: skipping bias deposition.", imove));
-                }
-
-                logger.fine(format(" Added Bias at [ L=%5.3f, FL=%9.3f]", lambda, currentdUdL));
-
-                // Compute the updated OST bias.
-                currentBiasEnergy = histogram.computeBiasEnergy(lambda, currentdUdL);
-
-                // Update the current OST Energy to be the sum of the current Force Field Energy and updated OST Bias.
-                currentOSTEnergy = currentForceFieldEnergy + currentBiasEnergy;
-
-                boolean snapShot = lambda >= orthogonalSpaceTempering.getLambdaWriteOut();
-                long mdMoveNum = imove * stepsPerMove;
-                EnumSet<MolecularDynamics.WriteActions> written = mdMove.writeFilesForStep(mdMoveNum, snapShot, true);
-                if (written.contains(MolecularDynamics.WriteActions.RESTART)) {
-                    orthogonalSpaceTempering.writeAdditionalRestartInfo(false);
-                }
-
+                double percent = (acceptMD * 100.0) / (imove + 1);
+                logger.info(format(" Reject [FL=%8.3f, E=%12.4f]  -> [FL=%8.3f,E=%12.4f] (%5.1f%%)",
+                        currentdUdL, currentOSTEnergy, proposeddUdL, proposedOSTEnergy, percent));
+                mdMove.revertMove();
             }
+            mdMoveAndEvalTime += nanoTime();
 
-            totalMoveTime += nanoTime();
-            logger.info(format(" Round complete in %6.3f sec.", totalMoveTime * NS2SEC));
-        }
+            logger.fine(format("\n  Total time to run and evaluate MD move: %6.3f", mdMoveAndEvalTime * NS2SEC));
+         */
     }
 
     /**
@@ -740,5 +733,83 @@ public class MonteCarloOST extends BoltzmannMC {
     @Override
     public void revertStep() {
         throw new UnsupportedOperationException("Not supported yet.");
+    }
+
+    @Override
+    public double[] getX() {
+        return molDyn.getX();
+    }
+
+    @Override
+    public double[] copyX(@Nullable double[] x) {
+        return molDyn.copyX(x);
+    }
+
+    @Override
+    public double[] getV() {
+        return molDyn.getV();
+    }
+
+    @Override
+    public double[] copyV(@Nullable double[] v) {
+        return molDyn.copyV(v);
+    }
+
+    @Override
+    public double[] getA() {
+        return molDyn.getA();
+    }
+
+    @Override
+    public double[] copyA(@Nullable double[] a) {
+        return molDyn.copyA(a);
+    }
+
+    @Override
+    public double[] getPriorAcceleration() {
+        return molDyn.getPriorAcceleration();
+    }
+
+    @Override
+    public double[] copyPriorAcceleration(@Nullable double[] aPrev) {
+        return molDyn.copyPriorAcceleration(aPrev);
+    }
+
+    @Override
+    public boolean topLevelAlgorithm() {
+        return false;
+    }
+
+    @Override
+    public void distributeListeners(long steps, long exteriorSteps) {
+
+    }
+
+    @Override
+    public Optional<Crystal> getCrystal() {
+        Crystal c = potential instanceof CrystalPotential ? ((CrystalPotential) potential).getCrystal() : null;
+        return Optional.ofNullable(c);
+    }
+
+    @Override
+    public boolean actionForStep(long step) {
+        return false;
+    }
+
+    private enum MCActions {
+        HMC, LAMBDA, COINFLIP, METROPOLIZE;
+    }
+
+    public enum MCAlgorithm {
+        ONE_STEP("1-step coinflip ", MCActions.COINFLIP, MCActions.HMC, MCActions.LAMBDA, MCActions.METROPOLIZE),
+        TWO_STEP("2-step staggered ", MCActions.LAMBDA, MCActions.HMC, MCActions.METROPOLIZE);
+
+        private final String algoString;
+        private final MCActions[] actions;
+
+        MCAlgorithm(String alS, MCActions... actions) {
+            this.algoString = alS;
+            this.actions = actions;
+        }
     }
 }

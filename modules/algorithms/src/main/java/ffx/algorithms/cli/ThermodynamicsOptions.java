@@ -119,13 +119,9 @@ public class ThermodynamicsOptions {
         dynamics.init();
 
         MolecularDynamics molDyn = dynamics.getDynamics(writeOut, potential, topologies[0], aListener);
-        for (int i = 1; i < topologies.length; i++) {
-            molDyn.addAssembly(topologies[i], topologies[i].getProperties());
-        }
 
         boolean initVelocities = true;
         long nSteps = dynamics.steps;
-        molDyn.setRestartFrequency(dynamics.getCheckpoint());
         // Start sampling.
         if (nEquil > 0) {
             logger.info("\n Beginning equilibration");

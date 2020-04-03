@@ -4240,11 +4240,10 @@ public class ForceFieldEnergyOpenMM extends ForceFieldEnergy {
          * The returned array x contains coordinates only for active atoms.
          *
          * @param x Atomic coordinates only for active atoms.
-         * @return x The atomic coordinates for only active atoms.
          */
-        public double[] getPositions(double[] x) {
+        public void getPositions(double[] x) {
             if (!positions) {
-                return x;
+                return;
             }
 
             int n = getNumberOfVariables();
@@ -4266,7 +4265,6 @@ public class ForceFieldEnergyOpenMM extends ForceFieldEnergy {
                     atom.moveTo(xx, yy, zz);
                 }
             }
-            return x;
         }
 
         /**
@@ -4274,11 +4272,10 @@ public class ForceFieldEnergyOpenMM extends ForceFieldEnergy {
          * The returned array x contains coordinates for active atoms only.
          *
          * @param v Velocity only for active atomic coordinates.
-         * @return v The velocity for each active atomic coordinate.
          */
-        public double[] getVelocities(double[] v) {
+        public void getVelocities(double[] v) {
             if (!velocities) {
-                return v;
+                return;
             }
 
             int n = getNumberOfVariables();
@@ -4300,7 +4297,6 @@ public class ForceFieldEnergyOpenMM extends ForceFieldEnergy {
                     atom.setVelocity(xx, yy, zz);
                 }
             }
-            return v;
         }
 
         /**
@@ -4308,11 +4304,10 @@ public class ForceFieldEnergyOpenMM extends ForceFieldEnergy {
          * The returned array a contains accelerations for active atoms only.
          *
          * @param a Acceleration components for only active atomic coordinates.
-         * @return a The acceleration for each active atomic coordinate.
          */
-        public double[] getAccelerations(double[] a) {
+        public void getAccelerations(double[] a) {
             if (!forces) {
-                return a;
+                return;
             }
 
             int n = getNumberOfVariables();
@@ -4336,7 +4331,6 @@ public class ForceFieldEnergyOpenMM extends ForceFieldEnergy {
                     atom.setAcceleration(xx, yy, zz);
                 }
             }
-            return a;
         }
 
         /**

@@ -63,7 +63,6 @@ public class ReplicaExchange implements Terminatable {
 
     private static final Logger logger = Logger.getLogger(ReplicaExchange.class.getName());
     private MolecularDynamics replica;
-    private final AlgorithmListener algorithmListener;
     private final int nReplicas;
     private final Random random;
     private boolean done = false;
@@ -73,10 +72,6 @@ public class ReplicaExchange implements Terminatable {
      * Parallel Java world communicator.
      */
     private final Comm world;
-    /**
-     * Number of processes is equal to the number of replicas.
-     */
-    private final int numProc;
     /**
      * Rank of this process.
      */
@@ -99,26 +94,24 @@ public class ReplicaExchange implements Terminatable {
     private int[] temp2Rank;
     private int[] rank2Temp;
     private double[] temperatures;
-    private double lowTemperature;
     private int[] acceptedCount;
 
     /**
      * ReplicaExchange constructor.
      *
      * @param molecularDynamics a {@link MolecularDynamics} object.
-     * @param listener          a {@link ffx.algorithms.AlgorithmListener} object.
      * @param temperature       a double.
      */
-    public ReplicaExchange(MolecularDynamics molecularDynamics,
-                           AlgorithmListener listener, double temperature) {
+    public ReplicaExchange(MolecularDynamics molecularDynamics, double temperature) {
 
         this.replica = molecularDynamics;
-        this.algorithmListener = listener;
-        this.lowTemperature = temperature;
 
         // Set up the Replica Exchange communication variables for Parallel Java communication between nodes.
         world = Comm.world();
-        numProc = world.size();
+        /**
+         * Number of processes is equal to the number of replicas.
+         */
+        int numProc = world.size();
         rank = world.rank();
 
         nReplicas = numProc;
@@ -127,7 +120,7 @@ public class ReplicaExchange implements Terminatable {
         rank2Temp = new int[nReplicas];
         acceptedCount = new int[nReplicas];
 
-        setExponentialTemperatureLadder(lowTemperature, 0.05);
+        setExponentialTemperatureLadder(temperature, 0.05);
 
         random = new Random();
         random.setSeed(0);
@@ -174,11 +167,8 @@ public class ReplicaExchange implements Terminatable {
      *
      * @param cycles        a int.
      * @param nSteps        a int.
-     * @param timeStep      a double.
-     * @param printInterval a double.
-     * @param saveInterval  a double.
      */
-    public void sample(int cycles, long nSteps, double timeStep, double printInterval, double saveInterval) {
+    public void sample(int cycles, long nSteps) {
         done = false;
         terminate = false;
         for (int i = 0; i < cycles; i++) {
@@ -187,7 +177,7 @@ public class ReplicaExchange implements Terminatable {
                 done = true;
                 break;
             }
-            dynamic(nSteps, timeStep, printInterval, saveInterval);
+            dynamic(nSteps);
             logger.info(String.format(" Applying exchange condition for cycle %d.", i));
             exchange(i);
         }
@@ -247,17 +237,14 @@ public class ReplicaExchange implements Terminatable {
      * completed the requested number of steps.
      *
      * @param nSteps        the number of time steps.
-     * @param timeStep      the time step.
-     * @param printInterval the number of steps between loggging updates.
-     * @param saveInterval  the number of steps between saving snapshots.
      */
-    private void dynamic(final long nSteps, final double timeStep, final double printInterval, final double saveInterval) {
+    private void dynamic(final long nSteps) {
 
         int i = rank2Temp[rank];
 
         // Start this processes MolecularDynamics instance sampling.
         boolean initVelocities = true;
-        replica.dynamic(nSteps, timeStep, printInterval, saveInterval, temperatures[i], initVelocities, null);
+        replica.dynamic(nSteps, temperatures[i], initVelocities);
 
         // Update this ranks' parameter array to be consistent with the dynamics.
         myParameters[0] = temperatures[i];

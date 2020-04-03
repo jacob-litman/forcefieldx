@@ -38,13 +38,14 @@
 package ffx.algorithms.mc;
 
 import java.util.Random;
+import java.util.function.DoubleSupplier;
 import java.util.logging.Logger;
 
 import static org.apache.commons.math3.util.FastMath.abs;
 import static org.apache.commons.math3.util.FastMath.max;
 import static org.apache.commons.math3.util.FastMath.min;
 
-import ffx.algorithms.thermodynamics.OrthogonalSpaceTempering;
+import ffx.potential.bonded.LambdaInterface;
 
 /**
  * Define an MC move to update lambda.
@@ -58,45 +59,56 @@ public class LambdaMove implements MCMove {
     /**
      * Current value of lambda, which always refreshed from the OST instance.
      */
-    private double currentLambda;
+    private double priorLambda;
     /**
-     * Apply the Lambda move to an OST instance.
+     * Apply the Lambda move to a LambdaInterface.
      */
-    private final OrthogonalSpaceTempering orthogonalSpaceTempering;
+    private final LambdaInterface lamPotential;
     /**
      * Random number generator.
      */
-    private Random random;
+    private final Random random;
     /**
      * Lambda move size:
      * 1) The standard deviation for continuous moves from a Gaussian distribution.
      * 2) The step size for discrete moves.
      */
-    private double moveSize = 0.1;
+    private final double moveSize;
     /**
      * If true, do continuous moves. Otherwise, use discrete moves.
      */
-    private boolean isContinuous = true;
+    private final boolean isContinuous;
+    /**
+     * Function to generate dL values.
+     */
+    private final DoubleSupplier dlGen;
 
     /**
      * <p>Constructor for LambdaMove.</p>
      *
-     * @param orthogonalSpaceTempering a {@link OrthogonalSpaceTempering} object.
+     * @param lamPotential Lambda interface/potential to operate on.
+     * @param continuous   If there is a continuous distribution of lambda values (vs. a discrete ladder).
+     * @param moveSize     Either the distance between bins (discrete) or standard deviation of move size (continuous).
+     * @param randomSeed   PRNG seed.
      */
-    public LambdaMove(OrthogonalSpaceTempering orthogonalSpaceTempering) {
-        this.orthogonalSpaceTempering = orthogonalSpaceTempering;
-        random = new Random();
+    public LambdaMove(LambdaInterface lamPotential, boolean continuous, double moveSize, long randomSeed) {
+        this(lamPotential, continuous, moveSize, new Random(randomSeed));
     }
 
     /**
-     * <p>Constructor for LambdaMove.</p>
+     * Constructor for lambdaMove.
      *
-     * @param randomSeed               Random seed to use.
-     * @param orthogonalSpaceTempering OrthogonalSpaceTempering instance.
+     * @param lamPotential Lambda interface/potential to operate on.
+     * @param continuous   If there is a continuous distribution of lambda values (vs. a discrete ladder).
+     * @param moveSize     Either the distance between bins (discrete) or standard deviation of move size (continuous).
+     * @param random       Source of randomness.
      */
-    public LambdaMove(int randomSeed, OrthogonalSpaceTempering orthogonalSpaceTempering) {
-        this.orthogonalSpaceTempering = orthogonalSpaceTempering;
-        random = new Random(randomSeed);
+    public LambdaMove(LambdaInterface lamPotential, boolean continuous, double moveSize, Random random) {
+        this.lamPotential = lamPotential;
+        this.moveSize = moveSize;
+        this.isContinuous = continuous;
+        dlGen = isContinuous ? this::continuousMove : this::discreteMove;
+        this.random = random;
     }
 
     /**
@@ -104,14 +116,14 @@ public class LambdaMove implements MCMove {
      */
     @Override
     public void move() {
-        currentLambda = orthogonalSpaceTempering.getLambda();
+        priorLambda = lamPotential.getLambda();
 
         // Draw a trial move from the distribution.
-        double dL = isContinuous ? continuousMove() : discreteMove();
-        double newLambda = mirror(currentLambda, dL);
+        double dL = dlGen.getAsDouble();
+        double newLambda = mirror(priorLambda, dL);
 
         // Update the OST instance.
-        orthogonalSpaceTempering.setLambda(newLambda);
+        lamPotential.setLambda(newLambda);
     }
 
     /**
@@ -183,25 +195,7 @@ public class LambdaMove implements MCMove {
      */
     @Override
     public void revertMove() {
-        orthogonalSpaceTempering.setLambda(currentLambda);
-    }
-
-    /**
-     * Get the Lambda move size, which is a standard deviation for continuous moves or step size for discrete moves.
-     *
-     * @param moveSize a double.
-     */
-    public void setMoveSize(double moveSize) {
-        this.moveSize = moveSize;
-    }
-
-    /**
-     * Get the Lambda move size, which is a standard deviation for continuous moves or step size for discrete moves.
-     *
-     * @return The lambda move size.
-     */
-    public double getMoveSize() {
-        return moveSize;
+        lamPotential.setLambda(priorLambda);
     }
 
     /**
@@ -209,13 +203,6 @@ public class LambdaMove implements MCMove {
      */
     public boolean isContinuous() {
         return isContinuous;
-    }
-
-    /**
-     * If true, do continuous moves. Otherwise, use discrete moves.
-     */
-    public void setContinuous(boolean continuous) {
-        isContinuous = continuous;
     }
 
     /**

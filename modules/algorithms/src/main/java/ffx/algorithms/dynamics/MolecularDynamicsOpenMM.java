@@ -37,7 +37,6 @@
 //******************************************************************************
 package ffx.algorithms.dynamics;
 
-import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
@@ -45,7 +44,7 @@ import java.util.logging.Logger;
 import java.util.stream.Collectors;
 import static java.lang.String.format;
 
-import org.apache.commons.configuration2.CompositeConfiguration;
+import ffx.utilities.MDListener;
 
 import ffx.algorithms.AlgorithmListener;
 import ffx.algorithms.dynamics.integrators.IntegratorEnum;
@@ -54,8 +53,6 @@ import ffx.numerics.Potential;
 import ffx.potential.ForceFieldEnergyOpenMM;
 import ffx.potential.ForceFieldEnergyOpenMM.Context;
 import ffx.potential.ForceFieldEnergyOpenMM.State;
-import ffx.potential.MolecularAssembly;
-import ffx.potential.extended.ExtendedSystem;
 import static ffx.utilities.Constants.NS2SEC;
 
 /**
@@ -92,14 +89,6 @@ public class MolecularDynamicsOpenMM extends MolecularDynamics {
      */
     private boolean running;
     /**
-     * Run time.
-     */
-    private long time;
-    /**
-     * Obtain all variables with each update (i.e. include velocities, gradients).
-     */
-    private boolean getAllVars = true;
-    /**
      * Method to run on update for obtaining variables. Will either grab
      * everything (default) or energies + positions (MC-OST).
      */
@@ -110,17 +99,11 @@ public class MolecularDynamicsOpenMM extends MolecularDynamics {
      * dynamics using native OpenMM routines, avoiding the cost of communicating
      * coordinates, gradients, and energies back and forth across the PCI bus.
      *
-     * @param assembly   MolecularAssembly to operate on
-     * @param potential  Either a ForceFieldEnergyOpenMM, or a Barostat.
-     * @param properties Associated properties
-     * @param listener   a {@link ffx.algorithms.AlgorithmListener} object.
-     * @param thermostat May have to be slightly modified for native OpenMM routines
-     * @param integrator May have to be slightly modified for native OpenMM routines
+     * @param opts     Options to be applied to this MD.
+     * @param listener a {@link ffx.algorithms.AlgorithmListener} object.
      */
-    public MolecularDynamicsOpenMM(MolecularAssembly assembly, Potential potential,
-                                   CompositeConfiguration properties, AlgorithmListener listener,
-                                   ThermostatEnum thermostat, IntegratorEnum integrator) {
-        super(assembly, potential, properties, listener, thermostat, integrator);
+    public MolecularDynamicsOpenMM(MolecularDynamicsOptions opts, AlgorithmListener listener) {
+        super(opts, listener);
 
         logger.info("\n Initializing OpenMM molecular dynamics.");
 
@@ -138,30 +121,21 @@ public class MolecularDynamicsOpenMM extends MolecularDynamics {
         }
         forceFieldEnergyOpenMM = feOMM.get(0);
 
-        List<Barostat> barostats = potentialStack.stream().
-                filter((Potential p) -> p instanceof Barostat).
-                map((Potential p) -> (Barostat) p).
-                collect(Collectors.toList());
-        if (barostats.isEmpty()) {
-            constantPressure = false;
-        } else if (barostats.size() > 1) {
-            logger.severe(format(" Attempting to create a MolecularDynamicsOpenMM with %d barostats: this presently only allows 0-1!", barostats.size()));
-        } else {
-            barostat = barostats.get(0);
+        if (barostat != null) {
             barostat.setActive(false);
         }
 
         // Update set active and inactive atoms.
         forceFieldEnergyOpenMM.setActiveAtoms();
 
-        thermostatType = thermostat;
-        integratorType = integrator;
+        thermostatType = opts.tEnum;
+        integratorType = opts.iEnum;
         integratorToString(integratorType);
 
         // Pseudo-random number generator used to seed the OpenMM velocity generator method.
         Random random = new Random();
-        if (properties.containsKey("velRandomSeed")) {
-            random.setSeed(properties.getInt("velRandomSeed", 0));
+        if (opts.properties.containsKey("velRandomSeed")) {
+            random.setSeed(opts.properties.getInt("velRandomSeed", 0));
         } else {
             random.setSeed(0);
         }
@@ -176,26 +150,25 @@ public class MolecularDynamicsOpenMM extends MolecularDynamics {
     @Override
     public void setObtainVelAcc(boolean obtainVA) {
         // TODO: Make this more generic by letting it obtain any weird combination of variables.
-        getAllVars = obtainVA;
         obtainVariables = obtainVA ? this::getAllOpenMMVariables : this::getOpenMMEnergiesAndPositions;
     }
 
     @Override
-    protected void appendSnapshot(String[] extraLines) {
-        if (!getAllVars) {
-            // If !getAllVars, need to ensure coordinates are synced before writing a snapshot.
-            getOpenMMEnergiesAndPositions();
-        }
-        super.appendSnapshot(extraLines);
+    protected List<Runnable> restartActions() {
+        List<Runnable> allRunnables = new ArrayList<>(1);
+        allRunnables.add(this::getAllOpenMMVariables);
+        allRunnables.addAll(super.restartActions());
+        return allRunnables;
     }
 
-    @Override
-    public void writeRestart() {
-        if (!getAllVars) {
-            // If !getAllVars, need to ensure all variables are synced before writing the restart.
-            getAllOpenMMVariables();
-        }
-        super.writeRestart();
+    protected List<Runnable> snapshotActions() {
+        // updateFromOpenMM already handles getting energies & positions.
+        /*List<Runnable> allRunnables = new ArrayList<>(1);
+        allRunnables.add(this::getOpenMMEnergiesAndPositions);
+        allRunnables.addAll(super.snapshotActions());
+        return allRunnables;*/
+
+        return super.snapshotActions();
     }
 
     /**
@@ -213,11 +186,8 @@ public class MolecularDynamicsOpenMM extends MolecularDynamics {
      * {@inheritDoc}
      */
     @Override
-    public void init(long numSteps, double timeStep, double loggingInterval, double trajectoryInterval,
-                     String fileType, double restartInterval, double temperature, boolean initVelocities, File dyn) {
-
-        super.init(numSteps, timeStep, loggingInterval, trajectoryInterval,
-                fileType, restartInterval, temperature, initVelocities, dyn);
+    public void init(final long nSteps, final double temperature, final boolean initVelocities) {
+        super.init(nSteps, temperature, initVelocities);
 
         boolean isLangevin = integratorType.equals(IntegratorEnum.STOCHASTIC);
 
@@ -254,14 +224,14 @@ public class MolecularDynamicsOpenMM extends MolecularDynamics {
      * simulation.
      */
     @Override
-    public void dynamic(long numSteps, double timeStep, double printInterval, double saveInterval, double temperature, boolean initVelocities, File dyn) {
+    public void dynamic(long numSteps, double temperature, boolean initVelocities) {
         // Return if already running and a second thread calls the dynamic method.
         if (!done) {
             logger.warning(" Programming error - a thread invoked dynamic when it was already running.");
             return;
         }
 
-        init(numSteps, timeStep, printInterval, saveInterval, fileType, restartInterval, temperature, initVelocities, dyn);
+        init(numSteps, temperature, initVelocities);
 
         if (intervalSteps == 0 || intervalSteps > numSteps) {
             // Safe cast: if intervalSteps > numSteps, then numSteps must be less than Integer.MAX_VALUE.
@@ -308,36 +278,6 @@ public class MolecularDynamicsOpenMM extends MolecularDynamics {
     @Override
     public int getIntervalSteps() {
         return intervalSteps;
-    }
-
-    /**
-     * {@inheritDoc}
-     */
-    @Override
-    public void setFileType(String fileType) {
-        this.fileType = fileType;
-    }
-
-    /**
-     * {@inheritDoc}
-     * <p>
-     * UNSUPPORTED: MolecularDynamicsOpenMM is not presently capable of handling
-     * extended system variables. Will throw an UnsupportedOperationException.
-     */
-    @Override
-    public void attachExtendedSystem(ExtendedSystem system, int printFrequency) {
-        throw new UnsupportedOperationException(" MolecularDynamicsOpenMM does not support extended system variables!");
-    }
-
-    /**
-     * {@inheritDoc}
-     * <p>
-     * UNSUPPORTED: MolecularDynamicsOpenMM is not presently capable of handling
-     * extended system variables. Will throw an UnsupportedOperationException.
-     */
-    @Override
-    public void detachExtendedSystem() {
-        throw new UnsupportedOperationException(" MolecularDynamicsOpenMM does not support extended system variables!");
     }
 
     /**
@@ -388,7 +328,7 @@ public class MolecularDynamicsOpenMM extends MolecularDynamics {
 
     private void mainLoop(long numSteps) {
         long i = 0;
-        time = System.nanoTime();
+        tll.setTime();
 
         while (i < numSteps) {
 
@@ -433,10 +373,10 @@ public class MolecularDynamicsOpenMM extends MolecularDynamics {
         currentKineticEnergy = state.kineticEnergy;
         currentTotalEnergy = state.totalEnergy;
         currentTemperature = state.temperature;
-        x = state.getPositions(x);
+        state.getPositions(x);
         state.getPeriodicBoxVectors();
-        v = state.getVelocities(v);
-        a = state.getAccelerations(a);
+        state.getVelocities(v);
+        state.getAccelerations(a);
         state.free();
     }
 
@@ -447,7 +387,7 @@ public class MolecularDynamicsOpenMM extends MolecularDynamics {
      * @param i       Number of OpenMM MD rounds.
      * @param running True if OpenMM MD rounds have begun running.
      */
-    private void updateFromOpenMM(long i, boolean running) {
+    private void updateFromOpenMM(final long i, boolean running) {
 
         double priorPE = currentPotentialEnergy;
 
@@ -463,11 +403,7 @@ public class MolecularDynamicsOpenMM extends MolecularDynamics {
                 logger.log(basicLogging, format("  %8s %12.4f %12.4f %12.4f %8.2f",
                         "", currentKineticEnergy, currentPotentialEnergy, currentTotalEnergy, currentTemperature));
             }
-            time = logThermoForTime(i, time);
-
-            if (automaticWriteouts) {
-                writeFilesForStep(i, true, true);
-            }
+            interiorListeners.forEach((MDListener mdL) -> mdL.actionForStep(i));
         }
     }
 
@@ -502,5 +438,4 @@ public class MolecularDynamicsOpenMM extends MolecularDynamics {
             }
         }
     }
-
 }

@@ -1,37 +1,21 @@
 package ffx.algorithms.listeners;
 
-import ffx.utilities.MDListener;
-
 import java.io.File;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
 
-public abstract class MDFileListener implements MDListener {
+public abstract class MDFileListener extends IntervalListener {
     protected File outputFile;
-    protected final long frequency;
-    private long stepsTaken;
-    private long nextWrite;
+    protected final List<Runnable> priorActions;
 
-    public MDFileListener(File fi, long frequency, long priorSteps) {
-        assert frequency > 0 && priorSteps >= 0;
+    public MDFileListener(File fi, long frequency, long priorSteps, List<Runnable> priorActions) {
+        super(frequency, priorSteps);
         outputFile = fi;
-        this.frequency = frequency;
-        stepsTaken = priorSteps;
-        setNextWrite(priorSteps);
+        this.priorActions = new ArrayList<>(priorActions);
     }
 
     public void alterFile(File newOutput) {
         outputFile = newOutput;
-    }
-
-    private void setNextWrite(long step) {
-        long cycles = step / frequency;
-        nextWrite = frequency * (cycles + 1);
-    }
-
-    protected boolean checkWrite(long step) {
-        if (step >= nextWrite) {
-            setNextWrite(step);
-            return true;
-        }
-        return false;
     }
 }

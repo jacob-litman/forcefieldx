@@ -47,11 +47,16 @@ import java.io.PrintWriter;
 import java.util.*;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+import java.util.stream.Stream;
+
 import static java.lang.String.format;
 import static java.lang.System.arraycopy;
 import static java.util.Arrays.fill;
 
+import ffx.algorithms.listeners.IntervalListener;
+import ffx.algorithms.listeners.MDFileListener;
 import ffx.utilities.FileUtils;
+import ffx.utilities.MDListener;
 import org.apache.commons.configuration2.CompositeConfiguration;
 import org.apache.commons.io.FilenameUtils;
 import static org.apache.commons.math3.util.FastMath.PI;
@@ -581,11 +586,10 @@ public class OrthogonalSpaceTempering implements CrystalPotential, LambdaInterfa
     }
 
     @Override
-    public void writeAdditionalRestartInfo(boolean recursive) {
-        writeRestart();
-        if (recursive) {
-            potential.writeAdditionalRestartInfo(true);
-        }
+    public Stream<MDListener> streamListeners(long snapshot, long restart, long report, long priorSteps) {
+        MDListener restartL = new LamWriteListener(restart, priorSteps);
+        MDListener logL = new OstLogger(report, priorSteps);
+        return Stream.of(restartL, logL);
     }
 
     /**
@@ -596,7 +600,6 @@ public class OrthogonalSpaceTempering implements CrystalPotential, LambdaInterfa
             algorithmListener.algorithmUpdate(molecularAssembly);
         }
 
-        // Only the rank 0 process writes a histogram restart file.
         histogram.writeRestart();
 
         // All ranks write a lambda restart file.
@@ -1163,6 +1166,33 @@ public class OrthogonalSpaceTempering implements CrystalPotential, LambdaInterfa
                 logger.info("Lambda optimization cutoff was not reached. Try increasing the number of timesteps.");
                 return null;
             }
+        }
+    }
+
+    private class LamWriteListener extends IntervalListener {
+        public LamWriteListener(long frequency, long priorSteps) {
+            super(frequency, priorSteps);
+        }
+
+        @Override
+        public boolean actionForStep(long step) {
+            if (checkWrite(step)) {
+                writeRestart();
+                return true;
+            }
+            return false;
+        }
+    }
+
+    private class OstLogger extends IntervalListener {
+
+        public OstLogger(long frequency, long priorSteps) {
+            super(frequency, priorSteps);
+        }
+
+        @Override
+        public boolean actionForStep(long step) {
+            return false;
         }
     }
 
@@ -2498,6 +2528,23 @@ public class OrthogonalSpaceTempering implements CrystalPotential, LambdaInterfa
                 return synchronousSend.getHistogramIndex();
             }
         }
+
+        // Currently, this is handled by the upper-level writeRestart.
+        /*private class HistoWriteListener extends MDFileListener {
+
+            public HistoWriteListener(File fi, long frequency, long priorSteps) {
+                super(fi, frequency, priorSteps);
+            }
+
+            @Override
+            public boolean actionForStep(long step) {
+                if (checkWrite(step)) {
+                    writeRestart();
+                    return true;
+                }
+                return false;
+            }
+        }*/
     }
 
 }

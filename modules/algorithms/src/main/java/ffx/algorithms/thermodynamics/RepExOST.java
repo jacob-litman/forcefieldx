@@ -144,7 +144,6 @@ public class RepExOST {
                 throw new IllegalArgumentException(" Could not recognize whether this is supposed to be MD, MC 1-step, or MC 2-step!");
         }
         this.molDyn = dyn;
-        molDyn.setAutomaticWriteouts(false);
         this.dynamics = dynamics;
         this.fileType = fileType;
         this.mcOST = mcOST;
@@ -168,7 +167,6 @@ public class RepExOST {
         basePath = FilenameUtils.getFullPath(firstFile.getAbsolutePath()) + File.separator;
         String baseFileName = FilenameUtils.getBaseName(firstFile.getAbsolutePath());
         dynFile = new File(String.format("%s%d%s%s.dyn", basePath, rank, File.separator, baseFileName));
-        molDyn.setFallbackDynFile(dynFile);
 
         File lambdaFile = new File(String.format("%s%d%s%s.lam", basePath, rank, File.separator, baseFileName));
         currentHistoIndex = rank;
@@ -301,9 +299,6 @@ public class RepExOST {
                 boolean trySnapshot = currentLambda >= ost.getLambdaWriteOut();
                 if (automaticWriteouts) {
                     EnumSet<MolecularDynamics.WriteActions> written = molDyn.writeFilesForStep(mdMoveNum, trySnapshot, true);
-                    if (written.contains(MolecularDynamics.WriteActions.RESTART)) {
-                        ost.writeAdditionalRestartInfo(false);
-                    }
                 }
 
                 reinitVelocities = false;
@@ -458,8 +453,7 @@ public class RepExOST {
      * @param numSteps MD steps to run.
      */
     private void runMD(long numSteps) {
-        molDyn.dynamic(numSteps, dynamics.getDt(), dynamics.getReport(), dynamics.getSnapshotInterval(), dynamics.getTemp(),
-                reinitVelocities, fileType, dynamics.getCheckpoint(), dynFile);
+        molDyn.dynamic(numSteps, dynamics.getTemp(), reinitVelocities);
     }
 
     public OrthogonalSpaceTempering getOST() {

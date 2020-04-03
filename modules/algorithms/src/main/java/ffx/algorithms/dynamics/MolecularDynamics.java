@@ -41,13 +41,20 @@ import java.io.File;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
+import java.util.function.Supplier;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+import java.util.stream.Stream;
 
 import static java.lang.String.format;
 import static java.lang.System.arraycopy;
 import static java.util.Arrays.fill;
 
+import ffx.algorithms.listeners.CompoundListener;
+import ffx.algorithms.listeners.DynListener;
+import ffx.algorithms.listeners.IntervalListener;
+import ffx.algorithms.listeners.TrajectoryListener;
+import ffx.potential.parsers.SystemFilter;
 import ffx.utilities.MDListener;
 import ffx.crystal.CrystalPotential;
 import ffx.utilities.Constants;
@@ -79,7 +86,6 @@ import ffx.potential.parsers.XYZFilter;
 import ffx.potential.utils.EnergyException;
 import ffx.potential.utils.PotentialsFunctions;
 import ffx.potential.utils.PotentialsUtils;
-import ffx.utilities.FileUtils;
 
 import static ffx.utilities.Constants.KCAL_TO_GRAM_ANG2_PER_PS2;
 import static ffx.utilities.Constants.NS2SEC;
@@ -90,7 +96,7 @@ import static ffx.utilities.Constants.NS2SEC;
  * @author Michael J. Schnieders
  * @since 1.0
  */
-public class MolecularDynamics implements Runnable, Terminatable, DynamicAlgorithm {
+public class MolecularDynamics extends DynamicAlgorithm implements Runnable, Terminatable  {
 
     private static final Logger logger = Logger.getLogger(MolecularDynamics.class.getName());
     /**
@@ -104,7 +110,7 @@ public class MolecularDynamics implements Runnable, Terminatable, DynamicAlgorit
     /**
      * Propogate dynamics on this potential surface.
      */
-    private final Potential potential;
+    protected final Potential potential;
     /**
      * Monte Carlo listener.
      */
@@ -124,7 +130,7 @@ public class MolecularDynamics implements Runnable, Terminatable, DynamicAlgorit
     /**
      * Flag to indicate use of constant pressure.
      */
-    private final boolean constantPressure;
+    protected final boolean constantPressure;
     /**
      * Any Barostat that may be in use.
      */
@@ -156,7 +162,7 @@ public class MolecularDynamics implements Runnable, Terminatable, DynamicAlgorit
     /**
      * Log basic information at this level. Always at or above intermediateLogging.
      */
-    private final Level basicLogging;
+    protected final Level basicLogging;
     /**
      * Dynamics restart file.
      */
@@ -225,7 +231,9 @@ public class MolecularDynamics implements Runnable, Terminatable, DynamicAlgorit
     public static final double DEFAULT_RESTART_INTERVAL = 1.0;
     public static final double DEFAULT_LOG_INTERVAL = 0.25;
     public static final double DEFAULT_TRAJECTORY_INTERVAL = 10.0;
-    private final List<MDListener> listeners = new ArrayList<>();
+    private final List<MDListener> allListeners = new ArrayList<>();
+    protected final List<MDListener> interiorListeners = new ArrayList<>();
+    private final List<MDListener> exteriorListeners = new ArrayList<>();
     /**
      * Time between writing out restart/checkpoint files in picoseconds.
      */
@@ -253,7 +261,7 @@ public class MolecularDynamics implements Runnable, Terminatable, DynamicAlgorit
     /**
      * Target temperature. ToDo: use the Thermostat instance.
      */
-    private double targetTemperature;
+    protected double targetTemperature;
     /**
      * Current temperature.
      */
@@ -310,19 +318,18 @@ public class MolecularDynamics implements Runnable, Terminatable, DynamicAlgorit
      * Wait this many nanoseconds in between polling the dynamics thread.
      */
     private final int dynSleepTime;
-
     /**
-     * <p>
-     * dynamicsFactory.</p>
-     *
-     * @param opts     Container object for various options.
-     * @param listener a {@link ffx.algorithms.AlgorithmListener} object.
-     * @return a {@link MolecularDynamics} object.
+     * List of (extra) suppliers of extra lines to add to snapshot headers.
      */
-    public static MolecularDynamics dynamicsFactory(MolecularDynamicsOptions opts, AlgorithmListener listener) {
-
-        return dynamicsFactory(opts, listener, defaultEngine(opts));
-    }
+    private final List<Supplier<Stream<String>>> snapshotLineProviders = new ArrayList<>();
+    /**
+     * Logs MD-related information.
+     */
+    protected final ThermoLogListener tll;
+    /**
+     * The layer above MD, or the MD itself if it's the top layer.
+     */
+    private DynamicAlgorithm aboveLayer;
 
     /**
      * <p>
@@ -335,6 +342,7 @@ public class MolecularDynamics implements Runnable, Terminatable, DynamicAlgorit
      */
     public static MolecularDynamics dynamicsFactory(MolecularDynamicsOptions opts, AlgorithmListener listener,
                                                     DynamicsEngine engine) {
+        engine = engine == null ? defaultEngine(opts) : engine;
         switch (engine) {
             case OPENMM:
                 Potential potentialEnergy = opts.potential;
@@ -391,7 +399,7 @@ public class MolecularDynamics implements Runnable, Terminatable, DynamicAlgorit
      * @param opts     Container object for various options.
      * @param listener a {@link ffx.algorithms.AlgorithmListener} object.
      */
-    private MolecularDynamics(MolecularDynamicsOptions opts, AlgorithmListener listener) {
+    protected MolecularDynamics(MolecularDynamicsOptions opts, AlgorithmListener listener) {
         this.assemblies = Arrays.stream(opts.assemblies).
                 map(AssemblyInfo::new).
                 toArray(AssemblyInfo[]::new);
@@ -438,17 +446,78 @@ public class MolecularDynamics implements Runnable, Terminatable, DynamicAlgorit
         saveSnapshotAsPDB = opts.saveSnapshotAsPDB;
         automaticWriteouts = opts.automaticWriteouts;
 
+        if (potential instanceof LambdaInterface) {
+            snapshotLineProviders.add(() -> {
+                String lamString = String.format("Lambda: %.8f", ((LambdaInterface) potential).getLambda());
+                return Stream.of(lamString);
+            });
+        }
 
+        Comm world = Comm.world();
+        if (world != null && world.size() > 1) {
+            snapshotLineProviders.add(() -> {
+                String rankString = String.format("Rank: %d", world.rank());
+                return Stream.of(rankString);
+            });
+        }
+
+        generateMDListeners();
+        tll = new ThermoLogListener(logFrequency, 0);
+        allListeners.add(tll);
+        aboveLayer = this;
 
         done = true;
     }
 
-    private void generateMDListeners() {
-
+    /**
+     * Gives MD a reference to the algorithm it "belongs" to.
+     * 
+     * @param layer Algorithm directly above MD.
+     */
+    public void setAboveLayer(DynamicAlgorithm layer) {
+        if (initialized) {
+            logger.warning(" Attempting to set a layer above an initialized MD!");
+        }
+        aboveLayer = layer;
     }
 
-    public VerbosityLevel getVerbosityLevel() {
-        return verbosityLevel;
+    public void addLineProvider(Supplier<Stream<String>> lineProvider) {
+        snapshotLineProviders.add(lineProvider);
+    }
+
+    protected List<Runnable> restartActions() {
+        return Collections.emptyList();
+    }
+
+    protected List<Runnable> snapshotActions() {
+        return Collections.emptyList();
+    }
+
+    private String[] getExtraLines() {
+        return snapshotLineProviders.stream().
+                flatMap(Supplier::get).
+                toArray(String[]::new);
+    }
+
+    private void generateMDListeners() {
+        DynListener dynL = new DynListener(restartFile, dynFilter, restartActions(),
+                restartFrequency, 0, this, basicLogging);
+        allListeners.add(dynL);
+
+        List<MDListener> snapshotListeners = new ArrayList<>(assemblies.length);
+        for (AssemblyInfo ai : assemblies) {
+            File outFi = saveSnapshotAsPDB ? ai.pdbFile : ai.archiveFile;
+            SystemFilter filter = saveSnapshotAsPDB ? ai.pdbFilter : ai.xyzFilter;
+            TrajectoryListener trjL = new TrajectoryListener(outFi, filter, this::getExtraLines,
+                    snapshotFrequency, 0, Collections.emptyList(), basicLogging);
+            // The trajectory listener's file will be updated through the AssemblyInfo.
+            ai.setTrajectoryListener(trjL);
+            snapshotListeners.add(trjL);
+        }
+        CompoundListener snapListener = new CompoundListener(snapshotFrequency, 0, snapshotActions(), snapshotListeners);
+        allListeners.add(snapListener);
+
+        allListeners.addAll(potential.getAdditionalListeners(snapshotFrequency, restartFrequency, logFrequency, 0));
     }
 
     // TODO: Consider either re-implementing reinit method or just building a new MD object each time.
@@ -481,6 +550,9 @@ public class MolecularDynamics implements Runnable, Terminatable, DynamicAlgorit
      * @param when     a {@link MolecularDynamics.MonteCarloNotification} object.
      */
     public void setMonteCarloListener(MonteCarloListener listener, MonteCarloNotification when) {
+        if (initialized) {
+            logger.warning(" Attempting to set the Monte Carlo listener for an already-initialized MD!");
+        }
         monteCarloListener = listener;
         mcNotification = when;
     }
@@ -498,6 +570,10 @@ public class MolecularDynamics implements Runnable, Terminatable, DynamicAlgorit
         if (!done) {
             logger.warning(" Programming error - attempt to modify parameters of a running MolecularDynamics instance.");
             return;
+        }
+
+        if (topLevelAlgorithm()) {
+            distributeListeners(nSteps, 0);
         }
 
         if (integrator instanceof Stochastic) {
@@ -582,28 +658,6 @@ public class MolecularDynamics implements Runnable, Terminatable, DynamicAlgorit
         }
         if (!verbosityLevel.isQuiet) {
             logger.info(" Done with an MD round.");
-        }
-    }
-
-    /**
-     * Converts an interval in ps to a frequency in timesteps.
-     *
-     * @param interval Interval between events in ps
-     * @param describe Description of the event.
-     * @return Frequency of event in timesteps per event.
-     * @throws IllegalArgumentException If interval is not a positive finite value.
-     */
-    private int intervalToFreq(double interval, String describe) throws IllegalArgumentException {
-        if (!Double.isFinite(interval) || interval <= 0) {
-            throw new IllegalArgumentException(format(" %s must be " +
-                    "positive finite value in ps, was %10.4g", describe, interval));
-        }
-        if (interval >= dt) {
-            return (int) (interval / dt);
-        } else {
-            logger.warning(format(" Specified %s of %.6f ps < timestep %.6f ps; " +
-                    "interval is set to once per timestep!", describe, interval, dt));
-            return 1;
         }
     }
 
@@ -734,69 +788,34 @@ public class MolecularDynamics implements Runnable, Terminatable, DynamicAlgorit
         }
     }
 
-    /**
-     * Append a snapshot to the trajectory file.
-     */
-    protected void appendSnapshot(String[] extraLines) {
-        for (AssemblyInfo ai : assemblies) {
-            if (ai.archiveFile != null && !saveSnapshotAsPDB) {
-                String aiName = FileUtils.relativePathTo(ai.archiveFile).toString();
-                if (ai.xyzFilter.writeFile(ai.archiveFile, true, extraLines)) {
-                    logger.log(basicLogging, format(" Appended snap shot to %s", aiName));
-                } else {
-                    logger.warning(format(" Appending snap shot to %s failed", aiName));
+    protected class ThermoLogListener extends IntervalListener {
+        private long time;
+
+        public ThermoLogListener(long frequency, long priorSteps) {
+            super(frequency, priorSteps);
+            time = -System.nanoTime();
+        }
+
+        protected void setTime() {
+            time = -System.nanoTime();
+        }
+
+        @Override
+        public boolean actionForStep(long step) {
+            if (checkWrite(step)) {
+                time += System.nanoTime();
+                logger.log(intermediateLogging, format(" %7.3e %12.4f %12.4f %12.4f %8.2f %8.3f",
+                        totalSimTime, currentKineticEnergy, currentPotentialEnergy,
+                        currentTotalEnergy, currentTemperature, time * NS2SEC));
+                for (AssemblyInfo assembly : assemblies) {
+                    // Probably unwise to parallelize this, so that it doesn't
+                    // hit the GUI with parallel updates.
+                    algorithmListener.algorithmUpdate(assembly.getAssembly());
                 }
-            } else if (saveSnapshotAsPDB) {
-                String aiName = FileUtils.relativePathTo(ai.pdbFile).toString();
-                if (ai.pdbFilter.writeFile(ai.pdbFile, true, extraLines)) {
-                    logger.log(basicLogging, format(" Wrote PDB file to %s", aiName));
-                } else {
-                    logger.warning(format(" Writing PDB file to %s failed.", aiName));
-                }
+                setTime();
+                return true;
             }
-        }
-    }
-
-    /**
-     * Checks if thermodynamics must be logged. If logged, current time is returned,
-     * else the time passed in is returned.
-     *
-     * @param step Timestep to possibly log thermodynamics for.
-     * @param time Clock time (in nsec) thermodynamics was last logged.
-     * @return Either current time (if logged), else the time variable passed in.
-     */
-    protected long logThermoForTime(long step, long time) {
-        if (step % logFrequency == 0) {
-            return logThermodynamics(time);
-        } else {
-            return time;
-        }
-    }
-
-    /**
-     * Log thermodynamics to the screen.
-     *
-     * @param time Clock time (in nsec) since this was last called.
-     * @return Clock time at the end of this call.
-     */
-    private long logThermodynamics(long time) {
-        time = System.nanoTime() - time;
-        logger.log(basicLogging, format(" %7.3e %12.4f %12.4f %12.4f %8.2f %8.3f",
-                totalSimTime, currentKineticEnergy, currentPotentialEnergy,
-                currentTotalEnergy, currentTemperature, time * NS2SEC));
-        return System.nanoTime();
-    }
-
-    /**
-     * Write out a restart file.
-     */
-    public void writeRestart() {
-        potential.writeAdditionalRestartInfo(true);
-        String dynName = FileUtils.relativePathTo(restartFile).toString();
-        if (dynFilter.writeDYN(restartFile, molecularAssembly.getCrystal(), x, v, a, aPrevious)) {
-            logger.log(basicLogging, " Wrote dynamics restart file to " + dynName);
-        } else {
-            logger.log(basicLogging, " Writing dynamics restart file to " + dynName + " failed");
+            return false;
         }
     }
 
@@ -804,9 +823,9 @@ public class MolecularDynamics implements Runnable, Terminatable, DynamicAlgorit
      * Main loop of the run method.
      */
     private void mainLoop() {
+        tll.setTime();
         // Integrate Newton's equations of motion for the requested number of steps,
         // unless early termination is requested.
-        long time = System.nanoTime();
         for (long step = 1; step <= nSteps; step++) {
             if (step > 1) {
                 List<Constraint> constraints = potential.getConstraints();
@@ -877,20 +896,8 @@ public class MolecularDynamics implements Runnable, Terminatable, DynamicAlgorit
 
             // Log the current state every printFrequency steps.
             totalSimTime += dt;
-            time = logThermoForTime(step, time);
-
-            if (automaticWriteouts) {
-                writeFilesForStep(step, true, true);
-            }
-
-            // Notify the algorithmListeners.
-            if (algorithmListener != null && step % logFrequency == 0) {
-                for (AssemblyInfo assembly : assemblies) {
-                    // Probably unwise to parallelize this, so that it doesn't
-                    // hit the GUI with parallel updates.
-                    algorithmListener.algorithmUpdate(assembly.getAssembly());
-                }
-            }
+            final long currStep = step; // For streaming purposes.
+            interiorListeners.forEach((MDListener mdL) -> mdL.actionForStep(currStep));
 
             // Check for a termination request.
             if (terminate) {
@@ -898,62 +905,6 @@ public class MolecularDynamics implements Runnable, Terminatable, DynamicAlgorit
                 break;
             }
         }
-    }
-
-    /**
-     * Write restart and trajectory files if the provided step matches the frequency and that file
-     * type is requested.
-     *
-     * @param step        Step to write files (if any) for.
-     * @param trySnapshot If false, do not write snapshot even if the timestep is correct.
-     * @param tryRestart  If false, do not write a restart file even if the timestep is correct.
-     * @return EnumSet of actions taken by this method.
-     */
-    public EnumSet<WriteActions> writeFilesForStep(long step, boolean trySnapshot, boolean tryRestart) {
-        return writeFilesForStep(step, trySnapshot, tryRestart, null);
-    }
-
-    /**
-     * Write restart and trajectory files if the provided step matches the frequency and that file
-     * type is requested.
-     *
-     * @param step        Step to write files (if any) for.
-     * @param trySnapshot If false, do not write snapshot even if the timestep is correct.
-     * @param tryRestart  If false, do not write a restart file even if the timestep is correct.
-     * @param extraLines  Additional lines to append into the comments section of the snapshot (or null).
-     * @return EnumSet of actions taken by this method.
-     */
-    public EnumSet<WriteActions> writeFilesForStep(long step, boolean trySnapshot, boolean tryRestart, String[] extraLines) {
-        List<String> linesList = (extraLines == null) ? new ArrayList<>() : new ArrayList<>(Arrays.asList(extraLines));
-
-        if (potential instanceof LambdaInterface) {
-            String lamString = String.format("Lambda: %.8f", ((LambdaInterface) potential).getLambda());
-            linesList.add(lamString);
-        }
-        Comm world = Comm.world();
-        if (world != null && world.size() > 1) {
-            String rankString = String.format("Rank: %d", world.rank());
-            linesList.add(rankString);
-        }
-
-        String[] allLines = new String[linesList.size()];
-        allLines = linesList.toArray(allLines);
-
-        EnumSet<WriteActions> written = EnumSet.noneOf(WriteActions.class);
-        if (step != 0) {
-            // Write out snapshots in selected format every saveSnapshotFrequency steps.
-            if (trySnapshot && snapshotFrequency > 0 && step % snapshotFrequency == 0) {
-                appendSnapshot(allLines);
-                written.add(WriteActions.SNAPSHOT);
-            }
-
-            // Write out restart files every saveRestartFileFrequency steps.
-            if (tryRestart && restartFrequency > 0 && step % restartFrequency == 0) {
-                writeRestart();
-                written.add(WriteActions.RESTART);
-            }
-        }
-        return written;
     }
 
     /**
@@ -1201,8 +1152,25 @@ public class MolecularDynamics implements Runnable, Terminatable, DynamicAlgorit
     }
 
     @Override
+    public boolean topLevelAlgorithm() {
+        return automaticWriteouts;
+    }
+
+    @Override
     public Optional<Crystal> getCrystal() {
         return (potential instanceof CrystalPotential) ? Optional.of(((CrystalPotential) potential).getCrystal()) : Optional.empty();
+    }
+
+    @Override
+    public boolean actionForStep(long step) {
+        // TODO: Act only on "outside" listeners.
+        boolean someAction = false;
+        for (MDListener listener : allListeners) {
+            if (listener.actionForStep(step)) {
+                someAction = true;
+            }
+        }
+        return someAction;
     }
 
     /**
@@ -1220,6 +1188,7 @@ public class MolecularDynamics implements Runnable, Terminatable, DynamicAlgorit
         File pdbFile;
         PDBFilter pdbFilter;
         XYZFilter xyzFilter = null;
+        TrajectoryListener trjL = null;
 
         AssemblyInfo(MolecularAssembly assembly) {
             this.assembly = assembly;
@@ -1235,6 +1204,11 @@ public class MolecularDynamics implements Runnable, Terminatable, DynamicAlgorit
 
         void setArchiveFile(File file) {
             archiveFile = file;
+            trjL.alterFile(file);
+        }
+
+        void setTrajectoryListener(TrajectoryListener trjL) {
+            this.trjL = trjL;
         }
     }
 
@@ -1382,7 +1356,9 @@ public class MolecularDynamics implements Runnable, Terminatable, DynamicAlgorit
      * @param intervalSteps Ignored.
      */
     public void setIntervalSteps(int intervalSteps) {
-        // Not meaningful for FFX MD.
+        if (initialized) {
+            logger.warning(" Attempting to set interval steps for an already-initialized MD!");
+        }
     }
 
     /**
@@ -1424,14 +1400,6 @@ public class MolecularDynamics implements Runnable, Terminatable, DynamicAlgorit
         public boolean isQuiet() {
             return isQuiet;
         }
-    }
-
-    /**
-     * Describes actions taken by writeFilesForStep
-     */
-    public enum WriteActions {
-        // TODO: Flesh this out if more functionality is needed.
-        RESTART, SNAPSHOT
     }
 
     /**

@@ -45,6 +45,7 @@ import ffx.numerics.Constraint;
 import ffx.numerics.Potential;
 import ffx.potential.ForceFieldEnergyOpenMM;
 import ffx.potential.MolecularAssembly;
+import ffx.potential.cli.WriteoutOptions;
 import ffx.utilities.Constants;
 import org.apache.commons.configuration2.CompositeConfiguration;
 
@@ -68,6 +69,7 @@ public class MolecularDynamicsOptions {
     private static final Logger logger = Logger.getLogger(MolecularDynamicsOptions.class.getName());
 
     final MolecularAssembly[] assemblies;
+    final CompositeConfiguration properties;
     final IntegratorEnum iEnum;
     final Integrator integrator;
     final ThermostatEnum tEnum;
@@ -76,7 +78,7 @@ public class MolecularDynamicsOptions {
     /**
      * Timestep in picoseconds.
      */
-    final double dt;
+    public final double dt;
     final int numSnapshotsToKeep;
 
     // Should only ever be accessed by the created MD object!
@@ -88,20 +90,21 @@ public class MolecularDynamicsOptions {
     
     MonteCarloListener mcListener = null;
     Barostat barostat;
-    MolecularDynamics.VerbosityLevel vLevel = MolecularDynamics.VerbosityLevel.DEFAULT_VERBOSITY;
+    public MolecularDynamics.VerbosityLevel vLevel = MolecularDynamics.VerbosityLevel.DEFAULT_VERBOSITY;
     File dynFile;
-    boolean loadRestart;
-    boolean initVelocities;
+    public boolean initVelocities;
     boolean automaticWriteouts;
     int dynSleepTime;
     final double restartInterval;
     final double snapshotInterval;
     final double logInterval;
-    boolean saveSnapshotAsPDB = false;
+    boolean saveSnapshotAsPDB;
     
     public MolecularDynamicsOptions(MolecularAssembly[] assemblies, Potential potential,
-                                    DynamicsOptions dynOpts, CompositeConfiguration properties) {
+                                    DynamicsOptions dynOpts, WriteoutOptions writeout,
+                                    CompositeConfiguration properties) {
         this.assemblies = Arrays.copyOf(assemblies, assemblies.length);
+        this.properties = properties;
         this.potential = potential;
         this.barostat = potential instanceof Barostat ? (Barostat) potential : null;
         IntegratorEnum reqI = dynOpts.integrator;
@@ -123,6 +126,8 @@ public class MolecularDynamicsOptions {
         restartInterval = dynOpts.getCheckpoint();
         snapshotInterval = dynOpts.getSnapshotInterval();
         logInterval = dynOpts.getReport();
+
+        saveSnapshotAsPDB = writeout.getFileType().equalsIgnoreCase("PDB");
 
         MolecularAssembly molecularAssembly = assemblies[0];
 

@@ -310,17 +310,17 @@ public interface Potential {
     }
 
     /**
-     * Gather listeners that this Potential and its underlying
+     * Gather listeners that this Potential and its underlying Potentials define.
      *
      * @param snapshot Frequency (in steps) that snapshots are printed.
      * @param report   Frequency (in steps) that thermodynamics are reported.
      * @param restart  Frequency (in steps) that restart files are written.
      * @return Any Listeners associated with this potential and underlying potentials.
      */
-    default List<MDListener> getAdditionalListeners(long snapshot, long restart, long report) {
+    default List<MDListener> getAdditionalListeners(long snapshot, long restart, long report, long priorSteps) {
         Stream<MDListener> listeners = getUnderlyingPotentials().stream().
-                flatMap((Potential p) -> p.streamListeners(snapshot, restart, report));
-        listeners = Stream.concat(listeners, streamListeners(snapshot, restart, report));
+                flatMap((Potential p) -> p.streamListeners(snapshot, restart, report, priorSteps));
+        listeners = Stream.concat(listeners, streamListeners(snapshot, restart, report, priorSteps));
         return listeners.collect(Collectors.toList());
     }
 
@@ -333,7 +333,7 @@ public interface Potential {
      * @param restart  Frequency (in steps) that thermodynamics are reported.
      * @return Stream of MDListeners associated with this Potential (non-recursive).
      */
-    default Stream<MDListener> streamListeners(long snapshot, long restart, long report) {
+    default Stream<MDListener> streamListeners(long snapshot, long restart, long report, long priorSteps) {
         return Stream.empty();
     }
 }

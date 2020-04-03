@@ -39,6 +39,7 @@ package ffx.algorithms.cli;
 
 import ffx.algorithms.AlgorithmListener;
 import ffx.algorithms.dynamics.MolecularDynamics;
+import ffx.algorithms.dynamics.MolecularDynamicsOptions;
 import ffx.algorithms.dynamics.integrators.Integrator;
 import ffx.algorithms.dynamics.integrators.IntegratorEnum;
 import ffx.algorithms.dynamics.thermostats.Thermostat;
@@ -47,9 +48,12 @@ import ffx.numerics.Potential;
 import ffx.potential.MolecularAssembly;
 
 import ffx.potential.cli.WriteoutOptions;
+import org.apache.commons.configuration2.CompositeConfiguration;
 import picocli.CommandLine;
 import picocli.CommandLine.Option;
 
+import javax.annotation.Nullable;
+import java.util.Optional;
 import java.util.logging.Logger;
 
 /**
@@ -179,21 +183,21 @@ public class DynamicsOptions {
      * Initialize a MolecularDynamics from the parsed options.
      *
      * @param potential      a {@link ffx.numerics.Potential} object.
-     * @param activeAssembly a {@link ffx.potential.MolecularAssembly} object.
      * @param sh             a {@link ffx.algorithms.AlgorithmListener} object.
      * @param writeout       a {@link WriteoutOptions} object.
      * @return a {@link MolecularDynamics} object.
      */
-    public MolecularDynamics getDynamics(WriteoutOptions writeout,
-                                         Potential potential,
-                                         MolecularAssembly activeAssembly,
+    public MolecularDynamics getDynamics(MolecularAssembly[] assemblies, WriteoutOptions writeout,
+                                         Potential potential, @Nullable CompositeConfiguration properties,
+                                         boolean loadRestart, boolean initVelocities,
                                          AlgorithmListener sh) {
+        properties = properties == null ? assemblies[0].getProperties() : properties;
         MolecularDynamics molDyn;
-        if (engine == null) {
-            molDyn = MolecularDynamics.dynamicsFactory(activeAssembly, potential, activeAssembly.getProperties(), sh, thermostat, integrator);
-        } else {
-            molDyn = MolecularDynamics.dynamicsFactory(activeAssembly, potential, activeAssembly.getProperties(), sh, thermostat, integrator, engine);
-        }
+        MolecularDynamicsOptions mdo = new MolecularDynamicsOptions(assemblies, potential, this, writeout, properties);
+        mdo.vLevel = MolecularDynamics.VerbosityLevel.DEFAULT_VERBOSITY;
+        mdo.initVelocities = initVelocities;
+
+        molDyn = MolecularDynamics.dynamicsFactory(mdo, sh, engine);
 
         return molDyn;
     }
@@ -253,6 +257,15 @@ public class DynamicsOptions {
      */
     public boolean getOptimize() {
         return optimize;
+    }
+
+    /**
+     * Returns either a manually selected DynamicsEngine or an empty Optional.
+     *
+     * @return Either a manually selected DynamicsEngine or an empty Optional.
+     */
+    public Optional<MolecularDynamics.DynamicsEngine> getEngine() {
+        return Optional.ofNullable(engine);
     }
 
     /**

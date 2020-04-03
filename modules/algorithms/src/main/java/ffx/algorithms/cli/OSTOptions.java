@@ -41,6 +41,7 @@ import java.io.File;
 import java.io.IOException;
 import java.util.logging.Logger;
 
+import ffx.algorithms.dynamics.MolecularDynamicsOptions;
 import ffx.algorithms.thermodynamics.HistogramSettings;
 import ffx.utilities.Constants;
 import org.apache.commons.configuration2.CompositeConfiguration;
@@ -57,6 +58,8 @@ import ffx.potential.bonded.LambdaInterface;
 import ffx.potential.cli.WriteoutOptions;
 
 import picocli.CommandLine;
+
+import javax.annotation.Nullable;
 
 /**
  * Represents command line options for scripts that utilize variants of the
@@ -329,21 +332,18 @@ public class OSTOptions {
      * @return           MolecularDynamics
      */
     public MolecularDynamics assembleMolecularDynamics(MolecularAssembly[] topologies, CrystalPotential potential,
-                                                       DynamicsOptions dynamics, AlgorithmListener aListener) {
+                                                       DynamicsOptions dynamics, AlgorithmListener aListener,
+                                                       WriteoutOptions writeout, @Nullable CompositeConfiguration props) {
         // Create the MolecularDynamics instance.
         MolecularAssembly firstTop = topologies[0];
-        CompositeConfiguration props = firstTop.getProperties();
+        props = props == null ? firstTop.getProperties() : props;
 
         dynamics.init();
 
-        MolecularDynamics molDyn = MolecularDynamics.dynamicsFactory(firstTop, potential, props,
-                aListener, dynamics.thermostat, dynamics.integrator, MolecularDynamics.DynamicsEngine.FFX);
-        for (int i = 1; i < topologies.length; i++) {
-            molDyn.addAssembly(topologies[i], topologies[i].getProperties());
-        }
-        molDyn.setRestartFrequency(dynamics.getCheckpoint());
+        MolecularDynamicsOptions mdo = new MolecularDynamicsOptions(topologies, potential, dynamics, writeout, props);
+        mdo.vLevel = MolecularDynamics.VerbosityLevel.DEFAULT_VERBOSITY;
 
-        return molDyn;
+        return MolecularDynamics.dynamicsFactory(mdo, aListener, dynamics.getEngine().orElse(null));
     }
 
     /**
@@ -355,16 +355,14 @@ public class OSTOptions {
      * @param dynamics                 Dynamics options.
      * @param writeOut                 a {@link WriteoutOptions} object.
      * @param thermo                   Thermodynamics options.
-     * @param dyn                      The .dyn dynamics restart file.
      * @param aListener                AlgorithmListener
      */
     public void beginMDOST(OrthogonalSpaceTempering orthogonalSpaceTempering,
                            MolecularAssembly[] topologies, CrystalPotential potential,
                            DynamicsOptions dynamics, WriteoutOptions writeOut, ThermodynamicsOptions thermo,
-                           File dyn, AlgorithmListener aListener) {
+                           @Nullable CompositeConfiguration props, AlgorithmListener aListener) {
         dynamics.init();
-
-        MolecularDynamics molDyn = assembleMolecularDynamics(topologies, potential, dynamics, aListener);
+        MolecularDynamics molDyn = assembleMolecularDynamics(topologies, potential, dynamics, aListener, writeOut, props);
 
         boolean initVelocities = true;
         long nSteps = dynamics.steps;
@@ -373,7 +371,7 @@ public class OSTOptions {
         if (nEquil > 0) {
             logger.info("\n Beginning equilibration");
             orthogonalSpaceTempering.setPropagateLambda(false);
-            runDynamics(molDyn, nEquil, dynamics, writeOut, true, dyn);
+            runDynamics(molDyn, nEquil, dynamics, true);
             logger.info(" Beginning OST sampling");
             orthogonalSpaceTempering.setPropagateLambda(true);
         } else {
@@ -388,7 +386,7 @@ public class OSTOptions {
             }
         }
         if (nSteps > 0) {
-            runDynamics(molDyn, nSteps, dynamics, writeOut, initVelocities, dyn);
+            runDynamics(molDyn, nSteps, dynamics, initVelocities);
         } else {
             logger.info(" No steps remaining for this process!");
         }
@@ -413,11 +411,6 @@ public class OSTOptions {
 
         MonteCarloOST monteCarloOST = new MonteCarloOST(orthogonalSpaceTempering.getPotentialEnergy(),
                 orthogonalSpaceTempering, topologies[0], topologies[0].getProperties(), listener, dynamics, verbose, mcMD);
-
-        MolecularDynamics md = monteCarloOST.getMD();
-        for (int i = 1; i < topologies.length; i++) {
-            md.addAssembly(topologies[i], topologies[i].getProperties());
-        }
 
         long nEquil = thermodynamics.getEquilSteps();
         if (nEquil > 0) {
@@ -458,9 +451,8 @@ public class OSTOptions {
     }
 
     private void runDynamics(MolecularDynamics molDyn, long numSteps, DynamicsOptions dynamics,
-                             WriteoutOptions writeout, boolean initVelocities, File dyn) {
-        molDyn.dynamic(numSteps, dynamics.dt, dynamics.report, dynamics.write, dynamics.temp,
-                initVelocities, writeout.getFileType(), dynamics.getCheckpoint(), dyn);
+                             boolean initVelocities) {
+        molDyn.dynamic(numSteps, dynamics.temp, initVelocities);
     }
 
     /**
