@@ -57,6 +57,7 @@ import ffx.algorithms.listeners.DynListener;
 import ffx.algorithms.listeners.IntervalListener;
 import ffx.algorithms.listeners.TrajectoryListener;
 import ffx.potential.parsers.SystemFilter;
+import ffx.utilities.FileUtils;
 import ffx.utilities.MDListener;
 import ffx.crystal.CrystalPotential;
 import ffx.utilities.Constants;
@@ -402,9 +403,12 @@ public class MolecularDynamics extends AbstractDynAlg implements Runnable, Termi
      * @param listener a {@link ffx.algorithms.AlgorithmListener} object.
      */
     protected MolecularDynamics(MolecularDynamicsOptions opts, AlgorithmListener listener) {
-        this.assemblies = Arrays.stream(opts.assemblies).
-                map(AssemblyInfo::new).
-                toArray(AssemblyInfo[]::new);
+        int nAssembly = opts.assemblies.length;
+        this.assemblies = new AssemblyInfo[nAssembly];
+        for (int i = 0; i < nAssembly; i++) {
+            this.assemblies[i] = new AssemblyInfo(opts.assemblies[i], opts.initialArchives[i], opts.saveSnapshotAsPDB);
+        }
+
         this.molecularAssembly = opts.assemblies[0];
         this.algorithmListener = listener;
         this.potential = opts.potential;
@@ -433,7 +437,11 @@ public class MolecularDynamics extends AbstractDynAlg implements Runnable, Termi
         verbosityLevel = opts.vLevel;
         basicLogging = verbosityLevel.basicLevel;
         intermediateLogging = verbosityLevel.intmdLevel;
-        this.restartFile = opts.dynFile;
+        if (opts.dynFile == null) {
+            restartFile = getDefaultDyn(molecularAssembly);
+        } else {
+            restartFile = opts.dynFile;
+        }
         this.dynFilter = new DYNFilter(molecularAssembly.getName());
         dt = opts.dt;
         timeStepFS = dt * Constants.PSEC_TO_FSEC;
@@ -463,12 +471,20 @@ public class MolecularDynamics extends AbstractDynAlg implements Runnable, Termi
             });
         }
 
+
+
         generateMDListeners();
         tll = new ThermoLogListener(logFrequency, 0);
         allListeners.add(tll);
         aboveLayer = this;
 
         done = true;
+    }
+
+    private File getDefaultDyn(MolecularAssembly mola) {
+        File struct = mola.getFile();
+        String dynFileName = FileUtils.relativePathTo(struct).toString().replaceFirst("\\.[^.]+$", ".dyn");
+        return new File(dynFileName);
     }
 
     /**
@@ -508,9 +524,7 @@ public class MolecularDynamics extends AbstractDynAlg implements Runnable, Termi
 
         List<MDListener> snapshotListeners = new ArrayList<>(assemblies.length);
         for (AssemblyInfo ai : assemblies) {
-            File outFi = saveSnapshotAsPDB ? ai.pdbFile : ai.archiveFile;
-            SystemFilter filter = saveSnapshotAsPDB ? ai.pdbFilter : ai.xyzFilter;
-            TrajectoryListener trjL = new TrajectoryListener(outFi, filter, this::getExtraLines,
+            TrajectoryListener trjL = new TrajectoryListener(ai.archiveFile, ai.filter, this::getExtraLines,
                     snapshotFrequency, 0, Collections.emptyList(), basicLogging);
             // The trajectory listener's file will be updated through the AssemblyInfo.
             ai.setTrajectoryListener(trjL);
@@ -1197,19 +1211,18 @@ public class MolecularDynamics extends AbstractDynAlg implements Runnable, Termi
     protected static class AssemblyInfo {
 
         private final MolecularAssembly assembly;
-        //private final CompositeConfiguration compositeConfiguration;
         File archiveFile = null;
-        File pdbFile;
-        PDBFilter pdbFilter;
-        XYZFilter xyzFilter = null;
+        SystemFilter filter = null;
         TrajectoryListener trjL = null;
 
-        AssemblyInfo(MolecularAssembly assembly) {
+        AssemblyInfo(MolecularAssembly assembly, File archiveFile, boolean pdbFormat) {
             this.assembly = assembly;
-            pdbFile = this.assembly.getFile();
-            //compositeConfiguration = this.assembly.getProperties();
-            pdbFilter = new PDBFilter(this.assembly.getFile(), this.assembly,
-                    this.assembly.getForceField(), this.assembly.getProperties());
+            this.archiveFile = archiveFile;
+            if (pdbFormat) {
+                filter = new PDBFilter(archiveFile, assembly, assembly.getForceField(), assembly.getProperties());
+            } else {
+                filter = new XYZFilter(archiveFile, assembly, assembly.getForceField(), assembly.getProperties());
+            }
         }
 
         public MolecularAssembly getAssembly() {

@@ -121,7 +121,7 @@ public class ThermodynamicsOptions {
         dynamics.init();
 
         properties = properties == null ? topologies[0].getProperties() : properties;
-        MolecularDynamics molDyn = dynamics.getDynamics(topologies, writeOut, potential, properties, aListener);
+        MolecularDynamics molDyn = dynamics.getDynamics(topologies, writeOut, potential, properties, null, aListener);
 
         boolean initVelocities = true;
         long nSteps = dynamics.steps;

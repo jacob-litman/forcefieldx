@@ -37,6 +37,7 @@
 //******************************************************************************
 package ffx.algorithms.groovy
 
+import ffx.algorithms.AlgorithmListener
 import org.apache.commons.io.FilenameUtils
 
 import edu.rit.pj.Comm
@@ -154,14 +155,9 @@ class Dynamics extends AlgorithmsScript {
             logger.info("\n Running molecular dynamics on " + modelFilename)
             // Restart File
             File dyn = new File(FilenameUtils.removeExtension(modelFilename) + ".dyn")
-            if (!dyn.exists()) {
-                dyn = null
-            }
 
-            molDyn = dynamics.getDynamics(writeOut, potential, activeAssembly, algorithmListener)
-
-            molDyn.dynamic(dynamics.steps, dynamics.dt,
-                    dynamics.report, dynamics.write, dynamics.temp, true, dyn)
+            molDyn = dynamics.getDynamics(new MolecularAssembly[]{activeAssembly}, writeOut, potential, null, null, algorithmListener);
+            molDyn.dynamic(dynamics.getNumSteps(), dynamics.getTemp(), !dyn.exists());
 
         } else {
             logger.info("\n Running replica exchange molecular dynamics on " + modelFilename)
@@ -177,17 +173,17 @@ class Dynamics extends AlgorithmsScript {
                 dyn = null
             }
 
-            molDyn = dynamics.getDynamics(writeOut, potential, activeAssembly, algorithmListener)
-            ReplicaExchange replicaExchange = new ReplicaExchange(molDyn, algorithmListener, dynamics.temp)
+            molDyn = dynamics.getDynamics(new MolecularAssembly[]{activeAssembly}, writeOut, potential, null, null, algorithmListener);
+            ReplicaExchange replicaExchange = new ReplicaExchange(molDyn, dynamics.getTemp())
 
-            long totalSteps = dynamics.steps
+            long totalSteps = dynamics.getNumSteps()
             int nSteps = 100
             int cycles = (int) (totalSteps / nSteps)
             if (cycles <= 0) {
                 cycles = 1
             }
 
-            replicaExchange.sample(cycles, nSteps, dynamics.dt, dynamics.report, dynamics.write)
+            replicaExchange.sample(cycles, nSteps)
         }
 
         return this

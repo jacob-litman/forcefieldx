@@ -53,6 +53,7 @@ import picocli.CommandLine;
 import picocli.CommandLine.Option;
 
 import javax.annotation.Nullable;
+import java.io.File;
 import java.util.Optional;
 import java.util.logging.Logger;
 
@@ -189,10 +190,11 @@ public class DynamicsOptions {
      */
     public MolecularDynamics getDynamics(MolecularAssembly[] assemblies, WriteoutOptions writeout,
                                          Potential potential, @Nullable CompositeConfiguration properties,
-                                         AlgorithmListener sh) {
+                                         File dynFile, AlgorithmListener sh) {
         properties = properties == null ? assemblies[0].getProperties() : properties;
         MolecularDynamics molDyn;
         MolecularDynamicsOptions mdo = new MolecularDynamicsOptions(assemblies, potential, this, writeout, properties);
+        mdo.dynFile = dynFile;
         mdo.vLevel = MolecularDynamics.VerbosityLevel.DEFAULT_VERBOSITY;
 
         molDyn = MolecularDynamics.dynamicsFactory(mdo, sh, engine);

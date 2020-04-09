@@ -46,14 +46,21 @@ import ffx.numerics.Potential;
 import ffx.potential.ForceFieldEnergyOpenMM;
 import ffx.potential.MolecularAssembly;
 import ffx.potential.cli.WriteoutOptions;
+import ffx.potential.utils.PotentialsFunctions;
+import ffx.potential.utils.PotentialsUtils;
 import ffx.utilities.Constants;
+import ffx.utilities.FileUtils;
 import org.apache.commons.configuration2.CompositeConfiguration;
+import org.apache.commons.io.FilenameUtils;
 
 import java.io.File;
+import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Objects;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+import java.util.stream.Stream;
 
 import static java.lang.String.format;
 
@@ -69,6 +76,7 @@ public class MolecularDynamicsOptions {
     private static final Logger logger = Logger.getLogger(MolecularDynamicsOptions.class.getName());
 
     final MolecularAssembly[] assemblies;
+    final File[] initialArchives;
     final CompositeConfiguration properties;
     final IntegratorEnum iEnum;
     final Integrator integrator;
@@ -91,18 +99,29 @@ public class MolecularDynamicsOptions {
     MonteCarloListener mcListener = null;
     Barostat barostat;
     public MolecularDynamics.VerbosityLevel vLevel = MolecularDynamics.VerbosityLevel.DEFAULT_VERBOSITY;
-    File dynFile;
+    public File dynFile;
     boolean automaticWriteouts;
     int dynSleepTime;
     final double restartInterval;
     final double snapshotInterval;
     final double logInterval;
-    boolean saveSnapshotAsPDB;
+    final boolean saveSnapshotAsPDB;
     
     public MolecularDynamicsOptions(MolecularAssembly[] assemblies, Potential potential,
                                     DynamicsOptions dynOpts, WriteoutOptions writeout,
                                     CompositeConfiguration properties) {
+        this(assemblies, potential, dynOpts, writeout, properties, defaultArchives(assemblies, writeout));
+    }
+
+    public MolecularDynamicsOptions(MolecularAssembly[] assemblies, Potential potential,
+                                    DynamicsOptions dynOpts, WriteoutOptions writeout,
+                                    CompositeConfiguration properties, File[] initialArchives) {
         this.assemblies = Arrays.copyOf(assemblies, assemblies.length);
+        this.initialArchives = initialArchives;
+        assert initialArchives.length == assemblies.length;
+        assert Arrays.stream(initialArchives).map(File::toString).distinct().count() == initialArchives.length;
+        assert Arrays.stream(initialArchives).noneMatch(Objects::isNull);
+
         this.properties = properties;
         this.potential = potential;
         this.barostat = potential instanceof Barostat ? (Barostat) potential : null;
@@ -198,5 +217,31 @@ public class MolecularDynamicsOptions {
         if (integrator instanceof Stochastic) {
             thermostat.setRemoveCenterOfMassMotion(false);
         }
+    }
+
+    /**
+     * Generate default archive files (.arc or .pdb) if none are provided.
+     *
+     * @param assemblies Assemblies to generate default archives for.
+     * @return           Array of default archive files.
+     */
+    private static File[] defaultArchives(MolecularAssembly[] assemblies, WriteoutOptions writeout) {
+        PotentialsFunctions pf = new PotentialsUtils();
+        boolean savePDB = writeout.getFileType().equalsIgnoreCase("PDB");
+
+        Stream<String> arcStream = Arrays.stream(assemblies).
+                map(MolecularAssembly::getFile).
+                map(FileUtils::relativePathTo).
+                map(Path::toString);
+
+        if (savePDB) {
+            arcStream = arcStream.map(pf::versionFile);
+        } else {
+            arcStream = arcStream.map((String fname) -> pf.versionFile(FilenameUtils.removeExtension(fname) + ".arc"));
+        }
+
+        File[] archives = arcStream.map(File::new).toArray(File[]::new);
+        assert Arrays.stream(archives).map(File::toString).distinct().count() == archives.length;
+        return archives;
     }
 }
