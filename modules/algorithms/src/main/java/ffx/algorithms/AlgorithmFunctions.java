@@ -67,22 +67,6 @@ import ffx.potential.utils.PotentialsFunctions;
 public interface AlgorithmFunctions extends PotentialsFunctions {
 
     /**
-     * Runs molecular dynamics on an assembly.
-     *
-     * @param assembly       a {@link ffx.potential.MolecularAssembly} object.
-     * @param nStep          Timesteps
-     * @param timeStep       Time per step
-     * @param printInterval  a double.
-     * @param saveInterval   a double.
-     * @param temperature    a double.
-     * @param initVelocities Initialize velocities from Maxwell-Boltzmann distribution
-     * @param dyn            Dynamics file
-     */
-    void md(MolecularAssembly assembly, int nStep, double timeStep,
-                            double printInterval, double saveInterval, double temperature,
-                            boolean initVelocities, File dyn);
-
-    /**
      * Relax the coordinates of a MolecularAssembly and minimize its potential energy
      *
      * @param assembly a {@link ffx.potential.MolecularAssembly} object.

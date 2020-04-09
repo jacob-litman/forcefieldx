@@ -42,8 +42,10 @@ import ffx.algorithms.dynamics.MolecularDynamics;
 import ffx.crystal.CrystalPotential;
 import ffx.potential.MolecularAssembly;
 import ffx.potential.cli.WriteoutOptions;
+import org.apache.commons.configuration2.CompositeConfiguration;
 import picocli.CommandLine;
 
+import javax.annotation.Nullable;
 import java.io.File;
 import java.util.Arrays;
 import java.util.Collections;
@@ -114,18 +116,19 @@ public class ThermodynamicsOptions {
      * @param aListener  AlgorithmListener
      * @return           The MolecularDynamics object constructed.
      */
-    public MolecularDynamics runFixedAlchemy(MolecularAssembly[] topologies, CrystalPotential potential,
+    public MolecularDynamics runFixedAlchemy(MolecularAssembly[] topologies, CrystalPotential potential, @Nullable CompositeConfiguration properties,
                                              DynamicsOptions dynamics, WriteoutOptions writeOut, File dyn, AlgorithmListener aListener) {
         dynamics.init();
 
-        MolecularDynamics molDyn = dynamics.getDynamics(writeOut, potential, topologies[0], aListener);
+        properties = properties == null ? topologies[0].getProperties() : properties;
+        MolecularDynamics molDyn = dynamics.getDynamics(topologies, writeOut, potential, properties, aListener);
 
         boolean initVelocities = true;
         long nSteps = dynamics.steps;
         // Start sampling.
         if (nEquil > 0) {
             logger.info("\n Beginning equilibration");
-            runDynamics(molDyn, nEquil, dynamics, writeOut, true, dyn);
+            runDynamics(molDyn, nEquil, dynamics, true);
             logger.info(" Beginning fixed-lambda alchemical sampling");
             initVelocities = false;
         } else {
@@ -143,17 +146,15 @@ public class ThermodynamicsOptions {
         }
 
         if (nSteps > 0) {
-            runDynamics(molDyn, nSteps, dynamics, writeOut, initVelocities, dyn);
+            runDynamics(molDyn, nSteps, dynamics, initVelocities);
         } else {
             logger.info(" No steps remaining for this process!");
         }
         return molDyn;
     }
 
-    private void runDynamics(MolecularDynamics md, long nSteps, DynamicsOptions dynamics, WriteoutOptions writeOut,
-                             boolean initVelocities, File dyn) {
-        md.dynamic(nSteps, dynamics.dt, dynamics.report, dynamics.write, dynamics.temp,
-                initVelocities, writeOut.getFileType(), dynamics.getCheckpoint(), dyn);
+    private void runDynamics(MolecularDynamics md, long nSteps, DynamicsOptions dynamics, boolean initVelocities) {
+        md.dynamic(nSteps, dynamics.temp, initVelocities);
     }
 
     /**

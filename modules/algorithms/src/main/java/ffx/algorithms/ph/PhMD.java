@@ -295,7 +295,7 @@ public class PhMD implements MonteCarloListener {
                 break;
             case CONTINUOUS:
                 forceFieldEnergy.attachExtendedSystem(esvSystem);
-                molecularDynamics.attachExtendedSystem(esvSystem, 100);
+                //molecularDynamics.attachExtendedSystem(esvSystem, 100);
                 break;
         }
     }
@@ -376,7 +376,7 @@ public class PhMD implements MonteCarloListener {
             forceFieldEnergy.reInit();
         }
         if (initMolDyn) {
-            molecularDynamics.reInit();
+            //molecularDynamics.reInit();
         }
     }
 
@@ -463,7 +463,7 @@ public class PhMD implements MonteCarloListener {
             boolean accepted = tryTerminusTitration((MultiTerminus) target);
             snapshotIndex++;
             if (accepted) {
-                molecularDynamics.reInit();
+                //molecularDynamics.reInit();
                 previousTarget = target;
             }
             return accepted;
@@ -629,7 +629,7 @@ public class PhMD implements MonteCarloListener {
         sb.append(String.format("     crit:    %9.4f              rng:       %10.4f\n", criterion, metropolis));
         if ((metropolis < criterion && titrationConfig.mcOverride != MCOverride.REJECT) || titrationConfig.mcOverride == MCOverride.ACCEPT) {
             numMovesAccepted++;
-            molecularDynamics.reInit();
+            //molecularDynamics.reInit();
             long took = System.nanoTime() - startTime;
             sb.append(String.format("     Accepted!                                                %1.3f", took * NS_TO_SEC));
             logger.info(sb.toString());
@@ -977,7 +977,7 @@ public class PhMD implements MonteCarloListener {
                 RotamerLibrary.applyRotamer(residue, origCoordsRotamer);
                 performTitration(targetMulti, titration, titrationConfig.inactivateBackground);
                 forceFieldEnergy.reInit();
-                molecularDynamics.reInit();
+                //molecularDynamics.reInit();
                 return false;
             }
         }
@@ -1134,7 +1134,7 @@ public class PhMD implements MonteCarloListener {
 //            molDyn.terminate();
             discountLogger.append(format("    launching new md process...\n"));
             log();
-            molecularDynamics.dynamic(nSteps, timeStep, print, save, temperature, initVelocities, fileType, restart, dynFile);
+            //molecularDynamics.dynamic(nSteps, timeStep, print, save, temperature, initVelocities, fileType, restart, dynFile);
         }
     }
 

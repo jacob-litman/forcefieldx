@@ -55,6 +55,8 @@ import ffx.potential.bonded.LambdaInterface;
 public class LambdaMove implements MCMove {
 
     private static final Logger logger = Logger.getLogger(LambdaMove.class.getName());
+    public static final double DEFAULT_MOVE_SIZE = 0.01;
+    public static final double MAX_CONTINOUOUS_MOVE = 0.1;
 
     /**
      * Current value of lambda, which always refreshed from the OST instance.

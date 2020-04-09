@@ -92,7 +92,6 @@ public class MolecularDynamicsOptions {
     Barostat barostat;
     public MolecularDynamics.VerbosityLevel vLevel = MolecularDynamics.VerbosityLevel.DEFAULT_VERBOSITY;
     File dynFile;
-    public boolean initVelocities;
     boolean automaticWriteouts;
     int dynSleepTime;
     final double restartInterval;

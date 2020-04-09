@@ -43,6 +43,7 @@ import ffx.algorithms.optimize.anneal.FlatEndAnnealSchedule;
 import ffx.algorithms.optimize.anneal.SimulatedAnnealing;
 import ffx.numerics.Potential;
 import ffx.potential.MolecularAssembly;
+import ffx.potential.cli.WriteoutOptions;
 import org.apache.commons.configuration2.CompositeConfiguration;
 import picocli.CommandLine.Option;
 
@@ -138,9 +139,9 @@ public class AnnealOptions {
      * @return          SimulatedAnnealing
      */
     public SimulatedAnnealing createAnnealer(DynamicsOptions dynOpts, MolecularAssembly mola,
-                                             Potential potential, CompositeConfiguration props,
-                                             AlgorithmListener alist) {
-        return createAnnealer(dynOpts, mola, potential, props, alist, null);
+                                             WriteoutOptions writeout, Potential potential,
+                                             CompositeConfiguration props, AlgorithmListener alist) {
+        return createAnnealer(dynOpts, writeout, mola, potential, props, alist);
     }
 
     /**
@@ -151,12 +152,11 @@ public class AnnealOptions {
      * @param potential Potential
      * @param props     Properties
      * @param alist     AlgorithmListener
-     * @param dynFile   Dynamics restart file.
      * @return          SimulatedAnnealing
      */
-    public SimulatedAnnealing createAnnealer(DynamicsOptions dynOpts, MolecularAssembly mola,
-                                             Potential potential, CompositeConfiguration props,
-                                             AlgorithmListener alist, File dynFile) {
+    public SimulatedAnnealing createAnnealer(DynamicsOptions dynOpts, WriteoutOptions writeout,
+                                             MolecularAssembly mola, Potential potential,
+                                             CompositeConfiguration props, AlgorithmListener alist) {
         AnnealingSchedule schedule = getSchedule();
         double totNormLen = schedule.totalWindowLength();
         long totSteps = dynOpts.steps;
@@ -198,7 +198,19 @@ public class AnnealOptions {
             logger.info(" Skipping printout of window lengths/temperatures (max printout at 200 windows)");
         }
 
-        return new SimulatedAnnealing(mola, potential, props, alist, dynOpts.thermostat,
-                dynOpts.integrator, schedule, perWindowSteps, dynOpts.dt, reinitV, dynFile);
+        /*
+        MolecularAssembly[] assemblies,
+                              Potential potentialEnergy,
+                              CompositeConfiguration properties,
+                              DynamicsOptions dynamics,
+                              WriteoutOptions writeout,
+                              AnnealingSchedule schedule,
+                              AlgorithmListener listener,
+                              long mdSteps,
+                              double timeStep,
+                              boolean reinitVelocities,
+         */
+        return new SimulatedAnnealing(new MolecularAssembly[]{mola}, potential, props, dynOpts,
+                writeout, schedule, alist, perWindowSteps, dynOpts.dt, reinitV);
     }
 }

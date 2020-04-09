@@ -45,6 +45,9 @@ import java.util.Set;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
+import ffx.algorithms.cli.DynamicsOptions;
+import ffx.algorithms.dynamics.MolecularDynamicsOptions;
+import ffx.potential.cli.WriteoutOptions;
 import org.apache.commons.configuration2.CompositeConfiguration;
 
 import ffx.algorithms.AlgorithmListener;
@@ -106,45 +109,35 @@ public class SimulatedAnnealing implements Runnable, Terminatable {
      */
     private int trajSteps = 1;
     private double saveFrequency = 0.1;
-    /**
-     * Restart file.
-     */
-    private File dynFile = null;
 
     /**
      * <p>
      * Constructor for SimulatedAnnealing.</p>
      *
-     * @param assembly            The Molecular Assembly to operate on.
      * @param potentialEnergy     The potential to anneal against.
      * @param properties          The system properties to use.
-     * @param listener            The algorithm listener is a callback to UI.
-     * @param requestedThermostat The requested thermostat.
-     * @param requestedIntegrator The requested integrator.
      * @param schedule            Schedule of temperatures to simulate at.
      * @param mdSteps             Steps per SA window.
      * @param timeStep            Timestep for MD in psec.
      */
-    public SimulatedAnnealing(MolecularAssembly assembly,
+    public SimulatedAnnealing(MolecularAssembly[] assemblies,
                               Potential potentialEnergy,
                               CompositeConfiguration properties,
-                              AlgorithmListener listener,
-                              ThermostatEnum requestedThermostat,
-                              IntegratorEnum requestedIntegrator,
+                              DynamicsOptions dynamics,
+                              WriteoutOptions writeout,
                               AnnealingSchedule schedule,
+                              AlgorithmListener listener,
                               long mdSteps,
                               double timeStep,
-                              boolean reinitVelocities,
-                              File dynFile) {
+                              boolean reinitVelocities) {
 
-        molecularDynamics = MolecularDynamics.dynamicsFactory(assembly, potentialEnergy,
-                properties, listener, requestedThermostat, requestedIntegrator);
+        MolecularDynamicsOptions mdOpts = new MolecularDynamicsOptions(assemblies, potentialEnergy, dynamics, writeout, properties);
+        molecularDynamics = MolecularDynamics.dynamicsFactory(mdOpts, listener, null);
         this.schedule = schedule;
         this.mdSteps = mdSteps;
         this.timeStep = timeStep;
         this.reinitV = reinitVelocities;
         minSimLength = mdSteps * schedule.minWindowLength() * timeStep;
-        this.dynFile = dynFile;
     }
 
     /**
@@ -202,16 +195,14 @@ public class SimulatedAnnealing implements Runnable, Terminatable {
         }
 
         int nWindows = schedule.getNumWindows();
-        boolean forceFirstReinit = (dynFile == null);
+        //boolean forceFirstReinit = (dynFile == null);
+        boolean forceFirstReinit = true; // TODO: Make meaningful.
 
         for (int i = 0; i < nWindows; i++) {
             double temperature = schedule.getTemperature(i);
             int nSteps = (int) (schedule.windowLength(i) * mdSteps);
             logger.info(String.format(" Annealing window %d: %d steps at %9.4g K", (i+1), nSteps, temperature));
-            molecularDynamics.dynamic(nSteps, timeStep, printInterval, saveFrequency, temperature, (reinitV || forceFirstReinit), dynFile);
-            if (dynFile == null) {
-                dynFile = molecularDynamics.getDynFile();
-            }
+            molecularDynamics.dynamic(nSteps, temperature, (reinitV || forceFirstReinit));
             forceFirstReinit = false;
             if (terminate) {
                 logger.info(String.format("\n Terminating at temperature %8.3f.\n", temperature));
@@ -250,21 +241,6 @@ public class SimulatedAnnealing implements Runnable, Terminatable {
      */
     public void setPrintInterval(double printInterval) {
         this.printInterval = printInterval;
-    }
-
-    /**
-     * Method to set the Restart Frequency.
-     *
-     * @param restart the time between writing restart files.
-     * @throws java.lang.IllegalArgumentException If restart frequency is not a
-     *                                            positive number
-     */
-    public void setRestartFrequency(double restart) throws IllegalArgumentException {
-        if (Double.isFinite(restart) && restart > 0) {
-            molecularDynamics.setRestartFrequency(restart);
-        } else {
-            throw new IllegalArgumentException(String.format(" Restart frequency must be positive finite, was %10.4g", restart));
-        }
     }
 
     /**

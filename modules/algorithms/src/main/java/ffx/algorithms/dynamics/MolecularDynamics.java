@@ -41,6 +41,8 @@ import java.io.File;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
+import java.util.function.DoubleConsumer;
+import java.util.function.DoubleSupplier;
 import java.util.function.Supplier;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -96,7 +98,7 @@ import static ffx.utilities.Constants.NS2SEC;
  * @author Michael J. Schnieders
  * @since 1.0
  */
-public class MolecularDynamics extends DynamicAlgorithm implements Runnable, Terminatable  {
+public class MolecularDynamics extends AbstractDynAlg implements Runnable, Terminatable  {
 
     private static final Logger logger = Logger.getLogger(MolecularDynamics.class.getName());
     /**
@@ -824,6 +826,23 @@ public class MolecularDynamics extends DynamicAlgorithm implements Runnable, Ter
      */
     private void mainLoop() {
         tll.setTime();
+        double defaultDeltaPEThresh = 1.0E6;
+        boolean removeCOMM = thermostat.getRemoveCenterOfMassMotion();
+
+        // Instead of having if-else blocks inside the main loop, use functional programming!
+        DoubleConsumer mcUpdate;
+        if (monteCarloListener != null && mcNotification == MonteCarloNotification.EACH_STEP) {
+            mcUpdate = monteCarloListener::mcUpdate;
+        } else {
+            mcUpdate = (double val) -> {};
+        }
+        DoubleSupplier respaE;
+        if (integrator instanceof Respa) {
+            respaE = ((Respa) integrator)::getHalfStepEnergy;
+        } else {
+            respaE = () -> 0.0;
+        }
+
         // Integrate Newton's equations of motion for the requested number of steps,
         // unless early termination is requested.
         for (long step = 1; step <= nSteps; step++) {
@@ -838,9 +857,7 @@ public class MolecularDynamics extends DynamicAlgorithm implements Runnable, Ter
                 }
             }
             /* Notify MonteCarlo handlers such as PhMD or rotamer drivers. */
-            if (monteCarloListener != null && mcNotification == MonteCarloNotification.EACH_STEP) {
-                monteCarloListener.mcUpdate(thermostat.getCurrentTemperature());
-            }
+            mcUpdate.accept(thermostat.getCurrentTemperature());
 
             // Do the half-step thermostat operation.
             thermostat.halfStep(dt);
@@ -858,12 +875,8 @@ public class MolecularDynamics extends DynamicAlgorithm implements Runnable, Ter
             }
 
             // Add the potential energy of the slow degrees of freedom.
-            if (integrator instanceof Respa) {
-                Respa r = (Respa) integrator;
-                currentPotentialEnergy += r.getHalfStepEnergy();
-            }
+            currentPotentialEnergy += respaE.getAsDouble();
 
-            double defaultDeltaPEThresh = 1.0E6;
             detectAtypicalEnergy(priorPE, defaultDeltaPEThresh);
 
             // Do the full-step integration operation.
@@ -878,9 +891,10 @@ public class MolecularDynamics extends DynamicAlgorithm implements Runnable, Ter
             // Recompute the kinetic energy after the full-step thermostat operation.
             thermostat.computeKineticEnergy();
 
-            // Remove center of mass motion ever ~100 steps.
+            // Remove center of mass motion every ~100 steps.
+            // TODO: Consider making this another MDListener.
             int removeCOMMotionFrequency = 100;
-            if (thermostat.getRemoveCenterOfMassMotion() && step % removeCOMMotionFrequency == 0) {
+            if (removeCOMM && step % removeCOMMotionFrequency == 0) {
                 thermostat.centerOfMassMotion(true, false);
             }
 

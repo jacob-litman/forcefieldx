@@ -73,15 +73,6 @@ public class UIUtils extends AlgorithmUtils implements AlgorithmFunctions {
     }
 
     @Override
-    public void md(MolecularAssembly assembly, int nStep, double timeStep, double printInterval, double saveInterval, double temperature, boolean initVelocities, File dyn) {
-        Optional<FFXSystem> origSys = switchTo(assembly);
-        modelingShell.md(nStep, timeStep, printInterval, saveInterval, temperature, initVelocities, dyn);
-        if (origSys.isPresent()) {
-            switchBack(origSys.get());
-        }
-    }
-
-    @Override
     public Potential minimize(MolecularAssembly assembly, double eps) {
         Optional<FFXSystem> origSys = switchTo(assembly);
         Potential pot = modelingShell.minimize(eps);

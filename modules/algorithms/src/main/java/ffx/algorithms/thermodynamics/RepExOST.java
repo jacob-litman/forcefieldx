@@ -78,11 +78,12 @@ public class RepExOST {
     private final OrthogonalSpaceTempering ost;
     private final OrthogonalSpaceTempering.Histogram[] allHistograms;
     private final SynchronousSend[] sends;
-    private final LongConsumer algoRun;
+    private final SampleRunner algoRun;
     private final MolecularDynamics molDyn;
     private final DynamicsOptions dynamics;
     private final String fileType;
     private final MonteCarloOST mcOST;
+    private final MonteCarloOST.MCAlgorithm mcAlgorithm;
     private final long stepsBetweenExchanges;
     private final Comm world;
     private final int rank;
@@ -130,14 +131,17 @@ public class RepExOST {
         switch (oType) {
             case MD:
                 algoRun = this::runMD;
+                mcAlgorithm = null;
                 isMC = false;
                 break;
             case MC_ONESTEP:
-                algoRun = this::runMCOneStep;
+                algoRun = this::runMC;
+                mcAlgorithm = MonteCarloOST.MCAlgorithm.ONE_STEP;
                 isMC = true;
                 break;
             case MC_TWOSTEP:
-                algoRun = this::runMCTwoStep;
+                algoRun = this::runMC;
+                mcAlgorithm = MonteCarloOST.MCAlgorithm.TWO_STEP;
                 isMC = true;
                 break;
             default:
@@ -147,9 +151,9 @@ public class RepExOST {
         this.dynamics = dynamics;
         this.fileType = fileType;
         this.mcOST = mcOST;
-        if (mcOST != null) {
+        /*if (mcOST != null) {
             mcOST.setAutomaticWriteouts(false);
-        }
+        }*/
         this.extension = WriteoutOptions.toArchiveExtension(fileType);
 
         this.world = Comm.world();
@@ -281,14 +285,16 @@ public class RepExOST {
 
         if (equilibrate) {
             logger.info(String.format(" Equilibrating repex OST without exchanges on histogram %d.", currentHistoIndex));
-            algoRun.accept(numTimesteps);
+            // TODO: Make exteriorSteps meaningful.
+            algoRun.runSamples(numTimesteps, 0);
             reinitVelocities = false;
         } else {
             long numExchanges = numTimesteps / stepsBetweenExchanges;
             for (int i = 0; i < numExchanges; i++) {
                 logger.info(String.format(" Beginning of repex loop %d of %d, operating on histogram %d", (i + 1), numExchanges, currentHistoIndex));
                 world.barrier(mainLoopTag);
-                algoRun.accept(stepsBetweenExchanges);
+                // TODO: Make exteriorSteps meaningful.
+                algoRun.runSamples(numTimesteps, 0);
                 ost.logOutputFiles(currentHistoIndex);
                 world.barrier(mainLoopTag);
                 proposeSwaps((i % 2), 2);
@@ -297,9 +303,9 @@ public class RepExOST {
                 long mdMoveNum = i * stepsBetweenExchanges;
                 currentLambda = ost.getLambda();
                 boolean trySnapshot = currentLambda >= ost.getLambdaWriteOut();
-                if (automaticWriteouts) {
+                /*if (automaticWriteouts) {
                     EnumSet<MolecularDynamics.WriteActions> written = molDyn.writeFilesForStep(mdMoveNum, trySnapshot, true);
-                }
+                }*/
 
                 reinitVelocities = false;
             }
@@ -427,24 +433,8 @@ public class RepExOST {
         }
     }
 
-    /**
-     * Run 1-step MC-OST for the specified number of MD steps.
-     *
-     * @param numSteps Number of MD steps (not MC cycles) to run.
-     */
-    private void runMCOneStep(long numSteps) {
-        mcOST.setRunLength(numSteps);
-        mcOST.sampleOneStep();
-    }
-
-    /**
-     * Run 2-step MC-OST for the specified number of MD steps.
-     *
-     * @param numSteps Number of MD steps (not MC cycles) to run.
-     */
-    private void runMCTwoStep(long numSteps) {
-        mcOST.setRunLength(numSteps);
-        mcOST.sampleTwoStep();
+    private interface SampleRunner {
+        void runSamples(long numSteps, long exteriorSteps);
     }
 
     /**
@@ -452,8 +442,14 @@ public class RepExOST {
      *
      * @param numSteps MD steps to run.
      */
-    private void runMD(long numSteps) {
+    private void runMD(long numSteps, long exteriorSteps) {
+        molDyn.distributeListeners(numSteps, exteriorSteps);
         molDyn.dynamic(numSteps, dynamics.getTemp(), reinitVelocities);
+    }
+
+    private void runMC(long numSteps, long exteriorSteps) {
+        mcOST.distributeListeners(numSteps, exteriorSteps);
+        mcOST.sample(numSteps, mcAlgorithm);
     }
 
     public OrthogonalSpaceTempering getOST() {

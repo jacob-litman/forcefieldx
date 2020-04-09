@@ -401,16 +401,21 @@ public class OSTOptions {
      * @param dynamics                 a {@link ffx.algorithms.cli.DynamicsOptions} object.
      * @param thermodynamics           a {@link ffx.algorithms.cli.ThermodynamicsOptions} object.
      * @param verbose                  Whether to print out additional information about MC-OST.
-     * @param listener                 An AlgorithmListener
      * @return                         An assembled MonteCarloOST ready to run.
      */
     public MonteCarloOST setupMCOST(OrthogonalSpaceTempering orthogonalSpaceTempering, MolecularAssembly[] topologies,
-                           DynamicsOptions dynamics, ThermodynamicsOptions thermodynamics, boolean verbose,
-                           AlgorithmListener listener) {
+                                    DynamicsOptions dynamics, ThermodynamicsOptions thermodynamics,
+                                    @Nullable CompositeConfiguration properties, MolecularDynamics molDyn,
+                                    boolean verbose, boolean topLevelAlgorithm) {
         dynamics.init();
+        //MonteCarloOstOptions opts, boolean topLevel
+        properties = properties == null ? topologies[0].getProperties() : properties;
+        MonteCarloOST.MonteCarloOstOptions opts = new MonteCarloOST.MonteCarloOstOptions(orthogonalSpaceTempering,
+                orthogonalSpaceTempering, dynamics, properties, molDyn, mcMD);
+        opts.setVerbose(verbose);
+        opts.setMoveSize(mcL);
 
-        MonteCarloOST monteCarloOST = new MonteCarloOST(orthogonalSpaceTempering.getPotentialEnergy(),
-                orthogonalSpaceTempering, topologies[0], topologies[0].getProperties(), listener, dynamics, verbose, mcMD);
+        MonteCarloOST monteCarloOST = new MonteCarloOST(opts, topLevelAlgorithm);
 
         long nEquil = thermodynamics.getEquilSteps();
         if (nEquil > 0) {
@@ -426,28 +431,18 @@ public class OSTOptions {
      */
     public void beginMCOST(MonteCarloOST monteCarloOST, DynamicsOptions dynamics, ThermodynamicsOptions thermo) {
         long nEquil = thermo.getEquilSteps();
+        MonteCarloOST.MCAlgorithm algorithm = ts ? MonteCarloOST.MCAlgorithm.TWO_STEP : MonteCarloOST.MCAlgorithm.ONE_STEP;
 
         if (nEquil > 0) {
             logger.info("\n Beginning MC-OST equilibration.");
-            monteCarloOST.setMDMoveParameters(nEquil);
-            if (ts) {
-                monteCarloOST.sampleTwoStep();
-            } else {
-                monteCarloOST.sampleOneStep();
-            }
+            monteCarloOST.sample(nEquil, algorithm);
             monteCarloOST.setEquilibration(false);
             logger.info("\n Finished MC-OST equilibration.");
         }
 
         logger.info("\n Beginning MC-OST sampling.");
-        monteCarloOST.setLambdaStdDev(mcL);
-        monteCarloOST.setMDMoveParameters(dynamics.steps);
 
-        if (ts) {
-            monteCarloOST.sampleTwoStep();
-        } else {
-            monteCarloOST.sampleOneStep();
-        }
+        monteCarloOST.sample(dynamics.steps, algorithm);
     }
 
     private void runDynamics(MolecularDynamics molDyn, long numSteps, DynamicsOptions dynamics,

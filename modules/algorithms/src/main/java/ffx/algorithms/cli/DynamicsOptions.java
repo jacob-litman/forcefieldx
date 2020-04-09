@@ -189,13 +189,11 @@ public class DynamicsOptions {
      */
     public MolecularDynamics getDynamics(MolecularAssembly[] assemblies, WriteoutOptions writeout,
                                          Potential potential, @Nullable CompositeConfiguration properties,
-                                         boolean loadRestart, boolean initVelocities,
                                          AlgorithmListener sh) {
         properties = properties == null ? assemblies[0].getProperties() : properties;
         MolecularDynamics molDyn;
         MolecularDynamicsOptions mdo = new MolecularDynamicsOptions(assemblies, potential, this, writeout, properties);
         mdo.vLevel = MolecularDynamics.VerbosityLevel.DEFAULT_VERBOSITY;
-        mdo.initVelocities = initVelocities;
 
         molDyn = MolecularDynamics.dynamicsFactory(mdo, sh, engine);
 

@@ -151,7 +151,7 @@ public class PhDiscount implements MonteCarloListener {
         ExtUtils.printConfigSet("All Config:", System.getProperties(), keyPrefixes);
         logger.info(format(" Running DISCOuNT-pH dynamics @ system pH %.2f\n", esvSystem.getConstantPh()));
         forceFieldEnergy.reInit();
-        molecularDynamics.reInit();
+        //molecularDynamics.reInit();
         molecularDynamics.setMonteCarloListener(this, MonteCarloNotification.EACH_STEP);
     }
 
@@ -181,8 +181,8 @@ public class PhDiscount implements MonteCarloListener {
         int movesAttempted = 0, movesAccepted = 0;
 
         /* Init step. */
-        molecularDynamics.dynamic(1, dt, printInterval, saveInterval, temperature,
-                initVelocities, fileType, writeRestartInterval, dynLoader);
+        /*molecularDynamics.dynamic(1, dt, printInterval, saveInterval, temperature,
+                initVelocities, fileType, writeRestartInterval, dynLoader);*/
 
         /* Launch first round of MD with traditional call to dynamic(). */
         logger.info(format(" Launching DISCOUNT pHMD for %d physical steps.", physicalSteps));
@@ -191,7 +191,7 @@ public class PhDiscount implements MonteCarloListener {
 
 //        molDyn.dynamic(attemptFrequency, dt, printInterval, saveInterval,
 //                temperature, initVelocities, fileType, writeRestartInterval, dynLoader);
-        molecularDynamics.redynamic(attemptFrequency, temperature);
+        //molecularDynamics.redynamic(attemptFrequency, temperature);
         int stepsTaken = attemptFrequency;
 
         while (stepsTaken < physicalSteps) {
@@ -206,10 +206,10 @@ public class PhDiscount implements MonteCarloListener {
             logger.info(format(" (Round %d) Launching fixed-protonation dynamics for %d steps.",
                     movesAttempted + 1, attemptFrequency));
             if (stepsTaken + attemptFrequency < physicalSteps) {
-                molecularDynamics.redynamic(attemptFrequency, temperature);
+                //molecularDynamics.redynamic(attemptFrequency, temperature);
                 stepsTaken += attemptFrequency;
             } else {
-                molecularDynamics.redynamic(physicalSteps - stepsTaken, temperature);
+                //molecularDynamics.redynamic(physicalSteps - stepsTaken, temperature);
                 stepsTaken = physicalSteps;
             }
         }
@@ -330,17 +330,17 @@ public class PhDiscount implements MonteCarloListener {
 
         // TODO: Need to ensure that we fully protonate the protein before entering continuous-protonation space.
         forceFieldEnergy.attachExtendedSystem(esvSystem);
-        molecularDynamics.attachExtendedSystem(esvSystem, 10);
+        //molecularDynamics.attachExtendedSystem(esvSystem, 10);
         final double Uo_prime = currentTotalEnergy();
         logger.info(format(" %-40s %-s", "Trying continuous titration move.",
                 format("Uo,Uo': %16.8f, %16.8f", Uo, Uo_prime)));
 
-        molecularDynamics.redynamic(titrationDuration, targetTemperature);
+        //molecularDynamics.redynamic(titrationDuration, targetTemperature);
         final double Un_prime = currentTotalEnergy();
         for (int i = 0; i < esvSystem.size(); i++) {
             esvSystem.setLambda(i, Math.rint(esvSystem.getLambda(i)));
         }
-        molecularDynamics.detachExtendedSystem();
+        //molecularDynamics.detachExtendedSystem();
         forceFieldEnergy.detachExtendedSystem();
         final double Un = currentTotalEnergy();
         logger.info(format(" %-40s %-30s", "Move finished; detaching esvSystem.",

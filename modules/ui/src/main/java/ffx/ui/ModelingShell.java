@@ -478,37 +478,6 @@ public final class ModelingShell extends Console implements AlgorithmListener {
     }
 
     /**
-     * <p>
-     * md</p>
-     *
-     * @param nStep          a int.
-     * @param timeStep       a double.
-     * @param printInterval  a double.
-     * @param saveInterval   a double.
-     * @param temperature    a double.
-     * @param initVelocities a boolean.
-     * @param dyn            a {@link java.io.File} object.
-     */
-    public void md(int nStep, double timeStep, double printInterval,
-                   double saveInterval, double temperature, boolean initVelocities,
-                   File dyn) {
-        if (interrupted || terminatableAlgorithm != null) {
-            return;
-        }
-        FFXSystem active = mainPanel.getHierarchy().getActive();
-        if (active != null) {
-            MolecularDynamics molecularDynamics = new MolecularDynamics(active,
-                    active.getPotentialEnergy(),
-                    active.getProperties(),
-                    this, ThermostatEnum.BUSSI, IntegratorEnum.BEEMAN);
-            terminatableAlgorithm = molecularDynamics;
-            molecularDynamics.dynamic(nStep, timeStep, printInterval,
-                    saveInterval, temperature, initVelocities, dyn);
-            terminatableAlgorithm = null;
-        }
-    }
-
-    /**
      * {@inheritDoc}
      * <p>
      * Return false if user elects to cancel.

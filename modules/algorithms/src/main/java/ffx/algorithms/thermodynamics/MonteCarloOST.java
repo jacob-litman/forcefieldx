@@ -44,6 +44,7 @@ import java.util.logging.Logger;
 import static java.lang.String.format;
 import static java.lang.System.nanoTime;
 
+import ffx.algorithms.dynamics.AbstractMCDynAlg;
 import ffx.algorithms.dynamics.DynamicAlgorithm;
 import ffx.crystal.Crystal;
 import ffx.crystal.CrystalPotential;
@@ -92,7 +93,7 @@ import static ffx.utilities.Constants.NS2SEC;
  * @author Jacob Litman
  * @since 1.0
  */
-public class MonteCarloOST extends BoltzmannMC implements DynamicAlgorithm {
+public class MonteCarloOST extends AbstractMCDynAlg {
 
     /**
      * Logger object to print out information for this class.
@@ -180,6 +181,8 @@ public class MonteCarloOST extends BoltzmannMC implements DynamicAlgorithm {
     private static final String equilAlgoString = "";
     private static final String algoFormatString = " %s %s MOST sampling with lambda and HMC moves";
 
+    private boolean init = false;
+
     /**
      * <p>
      * Constructor for MonteCarloOST.</p>
@@ -198,7 +201,7 @@ public class MonteCarloOST extends BoltzmannMC implements DynamicAlgorithm {
 
         // Create the MC MD and Lambda moves.
         mdMove = new MDMove(potential, opts.moldyn, stepsPerMove, opts.temperature);
-        boolean discreteLambda = opts.properties.getBoolean("discrete-lambda", false);
+        boolean discreteLambda = ! opts.continuous;
 
         if (discreteLambda) {
             double expected = orthogonalSpaceTempering.getHistogram().dL;
@@ -244,10 +247,11 @@ public class MonteCarloOST extends BoltzmannMC implements DynamicAlgorithm {
         final int biasDepositionFrequency;
 
         // Settable by exterior methods.
-        public boolean verbose = false;
+        private boolean verbose = false;
         public double moveSize;
-        Level regularLevel = Level.INFO;
-        Level verboseLevel = Level.INFO;
+        public boolean continuous;
+        private Level regularLevel = Level.INFO;
+        private Level verboseLevel = Level.INFO;
 
         public MonteCarloOstOptions(Potential p, OrthogonalSpaceTempering ost,
                                     DynamicsOptions dyn, CompositeConfiguration properties,
@@ -273,6 +277,40 @@ public class MonteCarloOST extends BoltzmannMC implements DynamicAlgorithm {
             if (!integ.knownReversible || !integ.knownDeterministic) {
                 throw new IllegalArgumentException(format("MC-OST requires " +
                         "a reversible deterministic integrator (e.g. VERLET, RESPA), found %s!", integ));
+            }
+
+            continuous = properties.getBoolean("discrete-lambda", false);
+            setMoveSize(LambdaMove.DEFAULT_MOVE_SIZE);
+        }
+
+        public void setVerbose(boolean verbose) {
+            this.verbose = verbose;
+            if (verbose) {
+                regularLevel = Level.INFO;
+                verboseLevel = Level.INFO;
+            } else {
+                regularLevel = Level.INFO;
+                verboseLevel = Level.FINE;
+            }
+        }
+
+        public void setMoveSize(double moveSize) {
+            if (continuous) {
+                if (moveSize > LambdaMove.MAX_CONTINOUOUS_MOVE) {
+                    logger.warning(String.format(" Attempted to set a continuous lambda " +
+                            "move size of %.3f > maximum %.3f; setting to %.3f", moveSize,
+                            LambdaMove.MAX_CONTINOUOUS_MOVE, LambdaMove.MAX_CONTINOUOUS_MOVE));
+                    this.moveSize = LambdaMove.MAX_CONTINOUOUS_MOVE;
+                } else if (moveSize <= 0) {
+                    logger.warning(String.format(" Attempted to set a continuous lambda " +
+                                    "move size of %.3f <= 0.0 ; setting to %.3f", moveSize,
+                            LambdaMove.DEFAULT_MOVE_SIZE));
+                    this.moveSize = LambdaMove.DEFAULT_MOVE_SIZE;
+                } else {
+                    this.moveSize = moveSize;
+                }
+            } else {
+                logger.fine(" Ignoring moveSize for discrete lambda moves!");
             }
         }
     }
@@ -666,7 +704,9 @@ public class MonteCarloOST extends BoltzmannMC implements DynamicAlgorithm {
         }
 
         resetRevertStack(accepted);
-        
+
+        // TODO: Finish implementing MC-OST!
+        return true;
         /*
 
             logger.log(verboseLoggingLevel, format("\n  %8s %12s %12s %12s %12s", "", "Kinetic", "Potential", "Bias", "Total"));
