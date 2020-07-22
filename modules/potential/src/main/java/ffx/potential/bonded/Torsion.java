@@ -415,6 +415,10 @@ public class Torsion extends BondedTerm implements LambdaInterface {
             energy));
   }
 
+  public double getValue() {
+    return value;
+  }
+
   /**
    * {@inheritDoc}
    *

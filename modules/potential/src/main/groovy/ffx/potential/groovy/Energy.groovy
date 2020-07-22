@@ -44,6 +44,7 @@ import ffx.potential.AssemblyState
 import ffx.potential.ForceFieldEnergy
 import ffx.potential.MolecularAssembly
 import ffx.potential.bonded.Atom
+import ffx.potential.bonded.Torsion
 import ffx.potential.cli.AtomSelectionOptions
 import ffx.potential.cli.PotentialScript
 import ffx.potential.parsers.PDBFilter
@@ -165,6 +166,9 @@ class Energy extends PotentialScript {
       energy = forceFieldEnergy.energy(x, true)
     }
 
+    Torsion theTors = forceFieldEnergy.getTorsions()[0];
+    logger.info(format(" Dihedral: %.5f", theTors.getValue()))
+
     if (moments) {
       Atom[] activeAtoms = activeAssembly.getActiveAtomArray()
       forceFieldEnergy.getPmeNode().computeMoments(activeAtoms, false)
@@ -198,6 +202,7 @@ class Energy extends PotentialScript {
           energy = forceFieldEnergy.energy(x, false)
           logger.info(format(" Snapshot %4d: %16.8f (kcal/mol)", index, energy))
         }
+        logger.info(format(" Dihedral: %.5f", theTors.getValue()))
 
         if (fl > 0) {
           lowestEnergyQueue.add(new StateContainer(new AssemblyState(activeAssembly), energy))
